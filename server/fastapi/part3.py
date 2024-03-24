@@ -2,7 +2,7 @@ from typing import Union, List
 from uuid import UUID
 from datetime import datetime, time, timedelta
 
-from fastapi import FastAPI, Query, Path, Body
+from fastapi import FastAPI, Query, Path, Body, Cookie, Header
 import uvicorn
 from pydantic import BaseModel, Field
 
@@ -112,3 +112,38 @@ async def read_items(
         "start_process": start_process,
         "duration": duration,
     }
+
+
+# 像定义路径参数、查询参数一样定义Cookie参数，声明 Cookie 参数的结构与声明 Query 参数和 Path 参数时相同
+@app.get("/items/")
+async def read_items(ads_id: str | None = Cookie(default=None)):
+    return {"ads_id": ads_id}
+
+
+# 使用定义 Query, Path 和 Cookie 参数一样的方法定义 Header 参数
+@app.get("/items/")
+async def read_items(user_agent: str | None = Header(default=None)):
+    return {"User-Agent": user_agent}
+
+
+'''
+在headers中常用的变量名都是用用 "连字符" 分隔，如user-agent，但是这样的变量python中无效，fastapi能够可以自动将下划线识别转换为连字符，
+如上述的“user_agent”，并且HTTP headers 是大小写不敏感的，不需要首字母大写
+'''
+
+'''
+重复的headers，即在类型声明中使用list来定义，使其可以收到重复的headers，也就是相同的header能有多个值
+如果与路径操作通信时发送两个HTTP headers，就像
+X-Token: foo
+X-Token: bar
+响应会是:
+{
+    "X-Token values": [
+        "bar",
+        "foo"
+    ]
+}
+'''
+@app.get("/items/")
+async def read_items(x_token: list[str] | None = Header(default=None)):  # 声明一个 X-Token header 可以出现多次
+    return {"X-Token values": x_token}
