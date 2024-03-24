@@ -17,10 +17,14 @@
 
 ComfyUI相关资源展示
 
+### 节点相关
+- 节点地址文档：https://github.com/ltdrdata/ComfyUI-Manager/blob/main/custom-node-list.json
+- 节点说明文档：https://blenderneko.github.io/ComfyUI-docs/
+
 ### 工作流
- - 
+ - https://comfyworkflows.com/
  - 
 
 ### API相关
- - 
- - 
+ - https://zhuanlan.zhihu.com/p/686893291
+ - https://9elements.com/blog/hosting-a-comfyui-workflow-via-api/
