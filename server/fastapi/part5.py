@@ -1,4 +1,9 @@
-from fastapi import FastAPI, HTTPException, Request
+import json
+from typing import Set, Union
+from datetime import datetime
+
+from fastapi import FastAPI, HTTPException, Request, status
+from pydantic import BaseModel
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import PlainTextResponse
@@ -7,6 +12,7 @@ from fastapi.exception_handlers import (
     http_exception_handler,
     request_validation_exception_handler,
 )
+from fastapi.encoders import jsonable_encoder
 
 
 app = FastAPI()
@@ -111,3 +117,126 @@ async def read_item(item_id: int):
     if item_id == 3:
         raise HTTPException(status_code=418, detail="Nope! I don't like 3.")
     return {"item_id": item_id}
+
+
+# 路径操作配置，路径操作装饰器支持多种配置参数；参数应直接传递给路径操作装饰器，不能传递给路径操作函数
+# 状态码，status_code 用于定义路径操作响应中的 HTTP 状态码;可以直接传递 int 代码， 比如 404，如果记不住数字码的涵义，也可以用 status 的快捷常量
+class Item(BaseModel):
+    name: str
+    description: Union[str, None] = None
+    price: float
+    tax: Union[float, None] = None
+    tags: Set[str] = set()
+
+
+@app.post("/items/", response_model=Item, status_code=status.HTTP_201_CREATED)  # 设施状态码
+async def create_item(item: Item):
+    return item
+
+
+# tags 参数，值是由 str 组成的 list （一般只有一个 str ），tags 用于为路径操作添加标签；具有相同tags参数的路径函数在swaager接口中会在同一个tag下
+@app.post("/items/", response_model=Item, tags=["items"])
+async def create_item(item: Item):
+    return item
+
+
+@app.get("/items/", tags=["items"])
+async def read_items():
+    return [{"name": "Foo", "price": 42}]
+
+
+@app.get("/users/", tags=["users"])
+async def read_users():
+    return [{"username": "johndoe"}]
+
+
+# summary和description
+@app.post(
+    "/items/",
+    response_model=Item,
+    summary="Create an item",
+    description="Create an item with all the information, name, description, price, tax and a set of unique tags",  # 描述路径操作
+)
+async def create_item(item: Item):
+    return item
+
+
+'''
+文档字符串（docstring）
+描述内容比较长且占用多行时，可以在函数的 docstring 中声明路径操作的描述，FastAPI 支持从文档字符串中读取描述内容。
+文档字符串支持 Markdown，能正确解析和显示 Markdown 的内容，但要注意文档字符串的缩进。
+'''
+@app.post("/items/", response_model=Item, summary="Create an item")
+async def create_item(item: Item):
+    """
+    Create an item with all the information:
+
+    - **name**: each item must have a name
+    - **description**: a long description
+    - **price**: required
+    - **tax**: if the item doesn't have tax, you can omit this
+    - **tags**: a set of unique tag strings for this item
+    """
+    return item
+
+
+# response_description 参数用于定义响应的描述说明；OpenAPI 规定每个路径操作都要有响应描述。如果没有定义响应描述
+# FastAPI 则自动生成内容为 "Successful response" 的响应描述
+@app.post(
+    "/items/",
+    response_model=Item,
+    summary="Create an item",
+    response_description="The created item",  # 响应的描述说明
+)
+async def create_item(item: Item):
+    """
+    Create an item with all the information:
+
+    - **name**: each item must have a name
+    - **description**: a long description
+    - **price**: required
+    - **tax**: if the item doesn't have tax, you can omit this
+    - **tags**: a set of unique tag strings for this item
+    """
+    return item
+
+
+# 弃用路径操作，deprecated 参数可以把路径操作标记为弃用，无需直接删除
+@app.get("/items/", tags=["items"])
+async def read_items():
+    return [{"name": "Foo", "price": 42}]
+
+
+@app.get("/users/", tags=["users"])
+async def read_users():
+    return [{"username": "johndoe"}]
+
+
+@app.get("/elements/", tags=["items"], deprecated=True)  # 表示此路径被启用了
+async def read_elements():
+    return [{"item_id": "Foo"}]
+
+
+'''
+JSON 兼容编码器
+在某些情况下，您可能需要将数据类型（如Pydantic模型）转换为与JSON兼容的数据类型（如dict、list等）。比如，如果您需要将其存储在数据库中。对于这种要求， FastAPI提供了jsonable_encoder()函数
+
+假设有一个数据库名为fake_db，它只能接收与JSON兼容的数据,它不接收datetime这类的对象，因为这些对象与JSON不兼容。因此，datetime对象必须将转换为包含ISO格式化的str类型对象。
+同样，这个数据库也不会接收Pydantic模型（带有属性的对象），而只接收dict。对此可以使用jsonable_encoder。它接收一个对象，比如Pydantic模型，并会返回一个JSON兼容的版本
+
+经过jsonable_encoder编码后的结果，可以使用Python标准编码中的json.dumps()。这个操作不会返回一个包含JSON格式（作为字符串）数据的庞大的str。它将返回一个Python标准数据结构（例如dict），其值和子值都与JSON兼容
+'''
+fake_db = {}
+
+
+class Item(BaseModel):
+    title: str
+    timestamp: datetime
+    description: str | None = None
+
+
+@app.put("/items/{id}")
+def update_item(id: str, item: Item):
+    json_compatible_item_data = jsonable_encoder(item)  # 将Pydantic模型转换为dict，并将datetime转换为str
+    # json_compatible_item_data = json.dumps(json_compatible_item_data)
+    fake_db[id] = json_compatible_item_data
