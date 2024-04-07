@@ -23,16 +23,49 @@ OpenAPI 定义了以下安全方案：
         此自动发现机制是 OpenID Connect 规范中定义的内容
 '''
 
-from typing import Annotated
+from typing import Annotated, Union
 
 from fastapi import Depends, FastAPI
 from fastapi.security import OAuth2PasswordBearer
+from pydantic import BaseModel
 
 app = FastAPI()
 
+# 详情链接：https://fastapi.tiangolo.com/zh/tutorial/security/first-steps/
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 
+class User(BaseModel):
+    username: str
+    email: Union[str, None] = None
+    full_name: Union[str, None] = None
+    disabled: Union[bool, None] = None
+
+
 @app.get("/items/")
-async def read_items(token: Annotated[str, Depends(oauth2_scheme)]):
+async def read_items(token: Annotated[str, Depends(oauth2_scheme)]):  # 基于依赖注入系统的安全系统向路径操作函数传递了 str 类型的 token
     return {"token": token}
+
+
+'''
+获取当前用用户；详情链接：https://fastapi.tiangolo.com/zh/tutorial/security/get-current-user/
+
+以下示例看起来有些冗长。毕竟这个文件同时包含了安全、数据模型的工具函数，以及路径操作等代码。但，关键是：安全和依赖注入的代码只需要写一次。
+就算写得再复杂，也只是在一个位置写一次就够了。所以，要多复杂就可以写多复杂。但是，就算有数千个端点（路径操作），它们都可以使用同一个安全系统。
+而且，所有端点（或它们的任何部件）都可以利用这些依赖项或任何其它依赖项。
+'''
+def fake_decode_token(token):
+    return User(
+        username=token + "fakedecoded", email="john@example.com", full_name="John Doe"
+    )
+
+
+# 创建依赖项，使用创建的（伪）工具函数，该函数接收 str 类型的令牌，并返回 Pydantic 的 User 模型
+async def get_current_user(token: str = Depends(oauth2_scheme)):  # 使用 oauth2_scheme 作为依赖项
+    user = fake_decode_token(token)
+    return user
+
+
+@app.get("/users/me")
+async def read_users_me(current_user: User = Depends(get_current_user)):  # 依赖注入；注意，此处把 current_user 的类型声明为 Pydantic 的 User 模型，有助于在函数内部使用代码补全和类型检查
+    return current_user
