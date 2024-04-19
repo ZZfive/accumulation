@@ -18,7 +18,7 @@
  - cd llama.cpp
  - 编译
    - cpu: make
-   - cuda: make LLAMA_CUBLAS=1
+   - cuda: make LLAMA_CUDA=1
 
 ## 量化
  - 将Huggingface格式的模型下载到llama.cpp/models路径中
@@ -46,7 +46,7 @@
  - 本地下载InterLM2的HF模型，如internlm2-chat-7b
  - 进入llama.cpp的根目录: **cd your_path/llama.cpp**
  - 使用"convert-hf-to-gguf.py"脚本将internlm2-chat-7b转换为"ggml-model-f16.gguf": **python convert-hf-to-gguf.py your_path/internlm2-chat-7b**
- - 执行以下命令部署服务: **./main -m ~/Project/AIGC/internlm2-chat-7b/ggml-model-f16.gguf --temp 0.2 --top-p 0.9 --top-k 5 --repeat_penalty 1.1 -ngl 10 --color -ins**
+ - 执行以下命令部署服务: **./main -m ./moedls/internlm2-chat-7b/ggml-model-f16.gguf --temp 0.2 --top-p 0.9 --top-k 5 --repeat_penalty 1.1 -ngl 10 --color -ins**
 
 ## LLaMa3
 待定
