@@ -166,7 +166,7 @@ class MultiHeadAttention(nn.Module):
         v = self.w_v(x)
 
         # 重塑张量以适应多头注意力
-        q = quit.view(b, num_tokens, self.num_heads, self.head_dim)
+        q = q.view(b, num_tokens, self.num_heads, self.head_dim)
         k = k.view(b, num_tokens, self.num_heads, self.head_dim)
         v = v.view(b, num_tokens, self.num_heads, self.head_dim)
 
