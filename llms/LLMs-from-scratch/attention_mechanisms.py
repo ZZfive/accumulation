@@ -139,7 +139,7 @@ class MultiHeadAttentionWrapper(nn.Module):
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_in, d_out, context_length,
                  dropout, num_heads, qkvb_bias=False):
-        super.__init__()
+        super().__init__()
         assert (d_out % num_heads == 0), "d_out must be divisible by num_heads"
 
         self.d_out = d_out
