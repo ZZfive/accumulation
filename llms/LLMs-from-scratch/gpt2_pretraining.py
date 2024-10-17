@@ -1,3 +1,4 @@
+import math
 from typing import Tuple, List
 
 import torch
@@ -73,6 +74,54 @@ def train_model_simple(model: nn.Module, train_loader: DataLoader, val_loader: D
             optimizer.step()
             token_seen += input_batch.numel()
             global_step += 1
+
+            if global_step % eval_freq == 0:
+                train_loss, val_loss = evaluate_model(model, train_loader, val_loader, device, eval_iter)
+                train_losses.append(train_loss)
+                val_losses.append(val_loss)
+                track_tokens_seen.append(token_seen)
+                print(f"Ep {epoch+1} (Step {global_step:06d}): "
+                      f"Train loss {train_loss:.3f}, Val loss {val_loss:.3f}")
+                
+        generate_and_print_sample(model, tokenizer, device, start_context)
+
+    return train_losses, val_losses, track_tokens_seen
+
+
+def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, optimizer: torch.optim.Optimizer,
+                device: torch.device, num_epochs: int, eval_freq: int, eval_iter: int, start_context: str,
+                tokenizer: tiktoken.Encoding, warmp_steps: int, initial_lr: float = 3e-5, min_lr: float = 1e-6) -> Tuple[List[float], List[float], List[int]]:
+    train_losses, val_losses, track_tokens_seen = [], [], []
+    token_seen, global_step = 0, -1
+
+    peak_lr = optimizer.param_groups[0]["lr"]
+    total_training_steps = len(train_loader) * num_epochs
+    lr_increment = (peak_lr - initial_lr) / warmp_steps
+
+    for epoch in range(num_epochs):
+        model.train()
+
+        for input_batch, target_batch in train_loader:
+            optimizer.zero_grad()
+            global_step += 1
+
+            if global_step < warmp_steps:
+                lr = initial_lr + global_step * lr_increment
+            else:
+                progress = (global_step - warmp_steps) / (total_training_steps - warmp_steps)
+                lr = min_lr + (peak_lr - min_lr) * 0.5 * (1 + math.cos(math.pi * progress))
+
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = lr
+
+            loss = calc_loss_bath(input_batch, target_batch, model, device)
+            loss.backward()
+
+            if global_step > warmp_steps:
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            optimizer.step()
+            token_seen += input_batch.numel()
 
             if global_step % eval_freq == 0:
                 train_loss, val_loss = evaluate_model(model, train_loader, val_loader, device, eval_iter)
