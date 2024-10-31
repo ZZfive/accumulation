@@ -131,7 +131,7 @@ class GroupQueryAttention(nn.Module):
 
         # 定义线性层，用于计算查询和输出
         self.w_q = nn.Linear(d_in, d_out, bias=False, dtype=dtype)
-        self.out_proj = nn.Linear(d_in, d_out, bias=False, dtype=dtype)
+        self.out_proj = nn.Linear(d_out, d_out, bias=False, dtype=dtype)
 
         # 获取预计算的ROPE参数
         mask, cos, sin = ShareBuffers.get_buffers(context_length, self.head_dim, rope_base, rope_config, dtype)

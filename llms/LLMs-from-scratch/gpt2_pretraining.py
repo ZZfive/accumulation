@@ -105,9 +105,9 @@ def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
             optimizer.zero_grad()
             global_step += 1
 
-            if global_step < warmp_steps:
+            if global_step < warmp_steps:  # warmup之前学习率线性增加
                 lr = initial_lr + global_step * lr_increment
-            else:
+            else:  # warmup之后学习率cosine降低
                 progress = (global_step - warmp_steps) / (total_training_steps - warmp_steps)
                 lr = min_lr + (peak_lr - min_lr) * 0.5 * (1 + math.cos(math.pi * progress))
 
@@ -117,7 +117,7 @@ def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
             loss = calc_loss_bath(input_batch, target_batch, model, device)
             loss.backward()
 
-            if global_step > warmp_steps:
+            if global_step > warmp_steps:  # warmup之后进行梯度剪裁
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             optimizer.step()
