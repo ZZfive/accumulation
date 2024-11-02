@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
 from gpt2 import GPTModel, generate_text_simple
-from utils import create_dataloader_v1
+from utils import create_dataloader_v1, text2id, id2text
 
 GPT_CONFIG = {
     "vocab_size": 50257,   # Vocabulary size
@@ -20,17 +20,6 @@ GPT_CONFIG = {
     "drop_rate": 0.1,      # Dropout rate
     "qkv_bias": False      # Query-key-value bias
 }
-
-
-def text2id(text: str, tokenizer: tiktoken.Encoding) -> torch.Tensor:
-    encoded = tokenizer.encode(text, allowed_special={'<|endoftext|>'})
-    encoded_tensor = torch.tensor(encoded).unsqueeze(0)
-    return encoded_tensor
-
-
-def id2text(token_ids: torch.Tensor, tokenizer: tiktoken.Encoding) ->str:
-    flat = token_ids.squeeze(0)
-    return tokenizer.decode(flat.tolist())
 
 
 def calc_loss_bath(input_batch: torch.Tensor, target_batch: torch.Tensor,

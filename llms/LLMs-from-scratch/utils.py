@@ -4,6 +4,17 @@ import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 
 
+def text2id(text: str, tokenizer: tiktoken.Encoding) -> torch.Tensor:
+    encoded = tokenizer.encode(text, allowed_special={'<|endoftext|>'})
+    encoded_tensor = torch.tensor(encoded).unsqueeze(0)
+    return encoded_tensor
+
+
+def id2text(token_ids: torch.Tensor, tokenizer: tiktoken.Encoding) ->str:
+    flat = token_ids.squeeze(0)
+    return tokenizer.decode(flat.tolist())
+
+
 class GPTDatasetV1(Dataset):
     def __init__(self, txt, tokenizer, max_length, stride):
         self.input_ids = []
@@ -159,7 +170,7 @@ class InstrcutionDataset(Dataset):
     
 
 # collate函数，将dataset中的数据构建成便于模型训练的形式
-def custom_collate_fn(batch: int,
+def custom_collate_fn(batch,
                       pad_token_id: int = 50256,  # 样本结束后添加一个告诉模型何时停止
                       ignore_index: int = -100,  # 用于pad样本至max_length，使用torch.nn.functional.cross_entropy计算交叉熵损失时会忽略掉-100位置
                       allowed_max_length: int = None,  # 如果样本的最大长度超过了模型的最大长度，可用此参数进行截取
@@ -203,3 +214,96 @@ def custom_collate_fn(batch: int,
     targets_tensor = torch.stack(targets_lst).to(device)
 
     return inputs_tensor, targets_tensor
+
+
+"""
+DPO主要思想就是对于同一个prompt有两个不同的回答，可以记为chosen和rejected；在设置的偏好上，如帮助性、安全性上chosen的内容比rejected更符合人类的预期，如下所示：
+{'instruction': 'Identify the correct spelling of the following word.',
+ 'input': 'Ocassion',
+ 'output': "The correct spelling is 'Occasion.'",
+ 'rejected': "The correct spelling is obviously 'Occasion.'",
+ 'chosen': "The correct spelling is 'Occasion.'"}
+
+上述例子中instruction、input、output与SFT阶段中一致，而rejected、chosen可以人写或使用LLMs生成
+"""
+
+
+class PreferenceDataset(Dataset):
+    def __init__(self, data, tokenizer, style):
+        if style not in ["alpacha", "phi"]:
+            raise ValueError(f"{style} is not supported")
+        self.data = data
+
+        self.encoded_texts = []
+        for entry in self.data:
+            instruction_plus_input = format_input(entry)
+            if style == "alpahca":
+                rejected_response = f"\n\n### Response:\n{entry['rejected']}"
+                chosen_response = f"\n\n### Response:\n{entry['chosen']}"
+            elif style == "phi":
+                rejected_response = f"\n<|assistant|>:\n{entry['rejected']}"
+                chosen_response = f"\n<|assistant|>:\n{entry['chosen']}"
+            
+            instruction_plus_input_tokens = tokenizer.encode(instruction_plus_input)
+            rejected_full_text = instruction_plus_input + rejected_response
+            chosen_full_text = instruction_plus_input + chosen_response
+            rejected_full_tokens = tokenizer.encode(rejected_full_text)
+            chosen_full_tokens = tokenizer.encode(chosen_full_text)
+            self.encoded_texts.append({
+                "prompt": instruction_plus_input_tokens,
+                "chosen": chosen_full_tokens,
+                "rejected": rejected_full_tokens
+            })
+
+    def __getitem__(self, index):
+        return self.encoded_texts[index]
+    
+    def __len__(self):
+        return len(self.data)
+    
+
+def custom_collate_fn_dpo(batch,
+                          pad_token_id: int = 50256,
+                          allowed_max_length: int = None,
+                          mask_promt_tokens: bool = True,
+                          device: str = "cpu"):
+    batch_data = {
+        "prompt": [],
+        "chosen": [],
+        "rejected": [],
+        "chosen_mask": [],
+        "rejected_mask": []
+    }  # make use of this mask to ignore prompt and padding tokens when computing the DPO loss
+
+    max_length_common = 0
+    if batch:
+        for key in ["chosen", "rejected"]:
+            current_max = max(len(item[key]) for item in batch) + 1
+            max_length_common = max(max_length_common, current_max)
+
+    for item in batch:
+        prompt = torch.tensor(item["prompt"])
+        batch_data["prompt"].append(prompt)
+
+        for key in ["chosen", "rejected"]:
+            sequence = item[key]
+            padded = sequence + [pad_token_id] * (max_length_common - len(sequence))
+            mask = torch.ones(max_length_common).bool()
+
+            mask[len(sequence):] = False  # Set mask for all padding tokens to False???为什么和上述保留了一个pad_token用于告诉模型何时停止不一样
+
+            if mask_promt_tokens:
+                mask[:prompt.shape[0]+2] = False  # Set mask for all input tokens to False; +2 sets the 2 newline ("\n") tokens before "### Response" to False
+
+            batch_data[key].append(torch.tensor(padded))
+            batch_data[f"{key}_mask"].append(torch.tensor(mask))
+
+    for key in ["chosen", "rejected", "chosen_mask", "rejected_mask"]:
+        tensor_stack = torch.stack(batch_data[key])
+
+        if allowed_max_length is not None:
+            tensor_stack = tensor_stack[:, :allowed_max_length]
+
+        batch[key] = tensor_stack.to(device)
+
+    return batch_data
