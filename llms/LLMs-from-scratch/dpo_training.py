@@ -3,9 +3,13 @@ DPO训练建立在SFT的基础上，策略模型policy_model和参考模型refer
 """
 
 import torch
+import tiktoken
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
 
 from gpt2 import GPTModel
+from gpt2_pretraining import generate_and_print_sample
+from utils import format_input, PreferenceDataset, custom_collate_fn_dpo
 
 
 def compute_dpo_loss(
@@ -126,7 +130,7 @@ def compute_dpo_loss_loader(data_loader, policy_model, reference_model, beta: fl
     if len(data_loader) == 0:
         return float("nan")
     elif num_batches is None:
-        num_batches = len(num_batches)
+        num_batches = len(data_loader)
     else:
         num_batches = min(num_batches, len(data_loader))
 
@@ -150,7 +154,112 @@ def compute_dpo_loss_loader(data_loader, policy_model, reference_model, beta: fl
     return total_loss, total_chosen_rewards, total_rejected_rewards
 
 
+def eval_dpo_loss_loader(policy_model, reference_model, train_loader, val_loader, eval_iter, beta: float = 0.1):
+    policy_model.eval()
+    with torch.no_grad():
+        train_loss, train_chosen_rewards, train_rejected_rewards = compute_dpo_loss_loader(
+            data_loader=train_loader,
+            policy_model=policy_model,
+            reference_model=reference_model,
+            beta=beta,
+            num_batches=eval_iter
+        )
+
+        val_loss, val_chosen_rewards, val_rejected_rewards = compute_dpo_loss_loader(
+            data_loader=val_loader,
+            policy_model=policy_model,
+            reference_model=reference_model,
+            beta=beta,
+            num_batches=eval_iter
+        )
+
+    res = {
+        "train_loss": train_loss,
+        "train_chosen_rewards": train_chosen_rewards,
+        "train_rejected_rewards": train_rejected_rewards,
+        "val_loss": val_loss,
+        "val_chosen_rewards": val_chosen_rewards,
+        "val_rejected_rewards": val_rejected_rewards,
+    }
+
+    policy_model.train()
+    return res
+
+
+def train_model_dpo_simple(policy_model, reference_model, train_loader, val_loader, optimizer,
+                           num_epochs, beta, eval_freq, eval_iter, start_context, tokenizer):
+    tracking = {
+        "train_losses": [],
+        "train_chosen_rewards": [],
+        "train_rejected_rewards": [],
+        "val_losses": [],
+        "val_chosen_rewards": [],
+        "val_rejected_rewards": [],
+        "tokens_seen": []
+    }
+
+    tokens_seen, global_step = 0, -1
+
+    for epoch in range(num_epochs):
+        policy_model.train()
+
+        for _, batch in enumerate(train_loader):
+            optimizer.zero_grad()
+
+            loss, _, _ = compute_dpo_loss_batch(
+                batch=batch,
+                policy_model=policy_model,
+                reference_model=reference_model,
+                beta=beta
+            )
+
+            loss.backward()
+            optimizer.step()
+
+            tokens_seen += batch["chosen"].numel()
+            global_step += 1
+
+            if global_step % eval_freq == 0:
+                res = eval_dpo_loss_loader(
+                    policy_model=policy_model,
+                    reference_model=reference_model,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                    beta=beta,
+                    eval_iter=eval_iter
+                )
+
+                tracking["train_losses"].append(res["train_loss"])
+                tracking["train_chosen_rewards"].append(res["train_chosen_reward"])
+                tracking["train_rejected_rewards"].append(res["train_rejected_reward"])
+                tracking["val_losses"].append(res["val_loss"])
+                tracking["val_chosen_rewards"].append(res["val_chosen_reward"])
+                tracking["val_rejected_rewards"].append(res["val_rejected_reward"])
+                tracking["tokens_seen"].append(tokens_seen)
+                train_reward_margin = res["train_chosen_reward"] - res["train_rejected_reward"]
+                val_reward_margin = res["val_chosen_reward"] - res["val_rejected_reward"]
+
+                print(
+                    f"Ep {epoch+1} (Step {global_step:06d}): "
+                    f"Train loss {res['train_loss']:.3f}, Val loss {res['val_loss']:.3f}, "
+                    f"Train reward margins {train_reward_margin:.3f}, "
+                    f"Val reward margins {val_reward_margin:.3f}"
+                )
+
+        # Print a sample text after each epoch
+        generate_and_print_sample(
+            model=model,
+            tokenizer=tokenizer,
+            device=loss.device,
+            start_context=start_context
+        )
+
+    return tracking
+
+
 if __name__ == "__main__":
+    torch.manual_seed(123)
+    tokenizer = tiktoken.get_encoding("gpt2")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     BASE_CONFIG = {
         "vocab_size": 50257,     # Vocabulary size
@@ -195,3 +304,46 @@ if __name__ == "__main__":
 
     policy_model.to(device)
     reference_model.to(device)
+
+    num_workers = 0
+    batch_size = 8
+
+    train_data = None  # 自行构建
+    val_data = None
+
+    train_dataset = PreferenceDataset(train_data, tokenizer)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        collate_fn=custom_collate_fn_dpo,
+        shuffle=True,
+        drop_last=True,
+        num_workers=num_workers
+    )
+
+    val_dataset = PreferenceDataset(val_data, tokenizer)
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        collate_fn=custom_collate_fn_dpo,
+        shuffle=False,
+        drop_last=False,
+        num_workers=num_workers
+    )
+
+    # 只将policy_model的参数传给optimizer，使用非常小的学习率
+    optimizer = torch.optim.AdamW(policy_model.parameters(), lr=5e-6, weight_decay=0.01)
+    num_epochs = 1  # 只训练一个epoch，因为dpo训练很容易崩溃，即使损失降低，但模型生成变差
+    tracking = train_model_dpo_simple(
+        policy_model=policy_model,
+        reference_model=reference_model,
+        train_loader=None,
+        val_loader=None,
+        optimizer=optimizer,
+        num_epochs=num_epochs,
+        beta=0.1, # value between 0.1 and 0.5；beta值可以从0.1增加到0.5来减少DPO的影响（我们这里使用0.1是为了让结果更明显）
+        eval_freq=5,
+        eval_iter=5,
+        start_context=format_input("一段测试文本"),
+        tokenizer=tokenizer
+    )
