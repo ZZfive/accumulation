@@ -32,7 +32,9 @@ from torchvision.utils import make_grid
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import savgol_filter
 
 
 # 等价于codebook类，其中self._embedding的权重就是最终使用的codebook向量
@@ -183,79 +185,171 @@ class VectorQuantizerEMA(nn.Module):
 
 
 class Residual(nn.Module):
+    """
+    残差块类，用于构建残差网络。
+
+    Attributes:
+        _block (nn.Sequential): 残差块的网络结构，包含两个卷积层和两个ReLU激活函数。
+    """
     def __init__(self, in_channels: int, num_hiddens: int, num_residual_hiddens: int) -> None:
+        """
+        初始化残差块。
+
+        Args:
+            in_channels (int): 输入通道数。
+            num_hiddens (int): 隐藏层通道数。
+            num_residual_hiddens (int): 残差连接的隐藏层通道数。
+        """
         super().__init__()
         self._block = nn.Sequential(
-            nn.ReLU(True),
+            nn.ReLU(True),  # 第一个ReLU激活函数
             nn.Conv2d(in_channels=in_channels,
                       out_channels=num_residual_hiddens,
-                      kernel_size=3, stride=1, padding=1, bias=False),
-            nn.ReLU(True),
+                      kernel_size=3, stride=1, padding=1, bias=False),  # 第一个卷积层
+            nn.ReLU(True),  # 第二个ReLU激活函数
             nn.Conv2d(in_channels=num_residual_hiddens,
                       out_channels=num_hiddens,
-                      kernel_size=1, stride=1, bias=False)
+                      kernel_size=1, stride=1, bias=False)  # 第二个卷积层
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self._block(x)
+        """
+        前向传播。
+
+        Args:
+            x (torch.Tensor): 输入的特征图。
+
+        Returns:
+            torch.Tensor: 输出的特征图，包括残差连接的结果。
+        """
+        return x + self._block(x)  # 残差连接
 
 
 class ResidualStack(nn.Module):
+    """
+    残差栈类，用于构建多个残差块的堆叠。
+
+    Attributes:
+        _num_residual_layers (int): 残差块的数量。
+        _layers (nn.ModuleList): 包含多个残差块的列表。
+    """
     def __init__(self, in_channels: int, num_hiddens: int, num_residual_layers: int,
                  num_residual_hiddens: int) -> None:
+        """
+        初始化残差栈。
+
+        Args:
+            in_channels (int): 输入通道数。
+            num_hiddens (int): 隐藏层通道数。
+            num_residual_layers (int): 残差块的数量。
+            num_residual_hiddens (int): 残差连接的隐藏层通道数。
+        """
         super().__init__()
-        self._num_residual_alyers = num_residual_layers
-        self._lays = nn.ModuleList([
-            Residual(in_channels, num_hiddens, num_residual_hiddens) for _ in range(self._num_residual_alyers
-            )
+        self._num_residual_layers = num_residual_layers
+        self._layers = nn.ModuleList([
+            Residual(in_channels, num_hiddens, num_residual_hiddens) for _ in range(self._num_residual_layers)
         ])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for i in range(self._num_residual_alyers):
-            x = self._lays[i](x)
-        return F.relu(x)
+        """
+        前向传播。
+
+        Args:
+            x (torch.Tensor): 输入的特征图。
+
+        Returns:
+            torch.Tensor: 输出的特征图，经过所有残差块的处理。
+        """
+        for i in range(self._num_residual_layers):
+            x = self._layers[i](x)
+        return F.relu(x)  # 最后一个ReLU激活函数
 
 
 class Encoder(nn.Module):
+    """
+    编码器类，用于将输入图像编码为特征向量。
+
+    Attributes:
+        _conv1 (nn.Conv2d): 第一个卷积层。
+        _conv2 (nn.Conv2d): 第二个卷积层。
+        _conv3 (nn.Conv2d): 第三个卷积层。
+        _residual_stack (ResidualStack): 残差栈。
+    """
     def __init__(self, in_channels: int, num_hiddens: int, num_residual_layers: int,
                  num_residual_hiddens: int) -> None:
+        """
+        初始化编码器。
+
+        Args:
+            in_channels (int): 输入通道数。
+            num_hiddens (int): 隐藏层通道数。
+            num_residual_layers (int): 残差块的数量。
+            num_residual_hiddens (int): 残差连接的隐藏层通道数。
+        """
         super().__init__()
         self._conv1 = nn.Conv2d(in_channels=in_channels,
                                 out_channels=num_hiddens//2,
                                 kernel_size=4,
-                                stride=2, padding=1)
+                                stride=2, padding=1)  # 下采样卷积层
         self._conv2 = nn.Conv2d(in_channels=num_hiddens//2,
                                 out_channels=num_hiddens,
                                 kernel_size=4,
-                                stride=2, padding=1)
+                                stride=2, padding=1)  # 下采样卷积层
         self._conv3 = nn.Conv2d(in_channels=num_hiddens,
                                 out_channels=num_hiddens,
                                 kernel_size=3,
-                                stride=1, padding=1)
+                                stride=1, padding=1)  # 普通卷积层
         self._residual_stack = ResidualStack(in_channels=in_channels,
                                              num_hiddens=num_hiddens,
                                              num_residual_layers=num_residual_layers,
                                              num_residual_hiddens=num_residual_hiddens)
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        前向传播。
+
+        Args:
+            x (torch.Tensor): 输入的图像特征图。
+
+        Returns:
+            torch.Tensor: 输出的特征向量，经过编码器的处理。
+        """
         x = self._conv1(x)
-        x = F.relu(x)
+        x = F.relu(x)  # ReLU激活函数
 
         x = self._conv2(x)
-        x = F.relu(x)
+        x = F.relu(x)  # ReLU激活函数
 
         x = self._conv3(x)
-        return self._residual_stack(x)
+        return self._residual_stack(x)  # 通过残差栈处理
 
 
 class Decoder(nn.Module):
+    """
+    解码器类，用于将特征向量解码为图像。
+
+    Attributes:
+        _conv1 (nn.Conv2d): 第一个卷积层。
+        _residual_stack (ResidualStack): 残差栈。
+        _conv_trans_1 (nn.ConvTranspose2d): 第一个上采样卷积层。
+        _conv_trans_2 (nn.ConvTranspose2d): 第二个上采样卷积层。
+    """
     def __init__(self, in_channels: int, num_hiddens: int, num_residual_layers: int,
                  num_residual_hiddens: int) -> None:
+        """
+        初始化解码器。
+
+        Args:
+            in_channels (int): 输入通道数。
+            num_hiddens (int): 隐藏层通道数。
+            num_residual_layers (int): 残差块的数量。
+            num_residual_hiddens (int): 残差连接的隐藏层通道数。
+        """
         super().__init__()
         self._conv1 = nn.Conv2d(in_channels=in_channels,
                                 out_channels=num_hiddens,
                                 kernel_size=3,
-                                stride=1, padding=1)
+                                stride=1, padding=1)  # 普通卷积层
         self._residual_stack = ResidualStack(in_channels=num_hiddens,
                                              num_hiddens=num_hiddens,
                                              num_residual_layers=num_residual_layers,
@@ -263,27 +357,56 @@ class Decoder(nn.Module):
         self._conv_trans_1 = nn.ConvTranspose2d(in_channels=num_hiddens, 
                                                 out_channels=num_hiddens//2,
                                                 kernel_size=4, 
-                                                stride=2, padding=1)
-        
+                                                stride=2, padding=1)  # 上采样卷积层
         self._conv_trans_2 = nn.ConvTranspose2d(in_channels=num_hiddens//2, 
                                                 out_channels=3,
                                                 kernel_size=4, 
-                                                stride=2, padding=1)
-    
+                                                stride=2, padding=1)  # 上采样卷积层
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        前向传播。
+
+        Args:
+            x (torch.Tensor): 输入的特征向量。
+
+        Returns:
+            torch.Tensor: 输出的图像特征图，经过解码器的处理。
+        """
         x = self._conv1(x)
 
         x = self._residual_stack(x)
 
         x = self._conv_trans_1(x)
-        x = F.relu(x)
+        x = F.relu(x)  # ReLU激活函数
 
-        return self._conv_trans_2(x)
+        return self._conv_trans_2(x)  # 最终的上采样卷积层
 
 
 class VQVAEModel(nn.Module):
+    """
+    VQVAE模型类，用于实现矢量量化自编码器。
+
+    Attributes:
+        _encoder (Encoder): 编码器。
+        _pre_vq_conv (nn.Conv2d): 量化前的卷积层。
+        _vq_vae (VectorQuantizer or VectorQuantizerEMA): 矢量量化器。
+        _decoder (Decoder): 解码器。
+    """
     def __init__(self, num_hiddens: int, num_residual_layers: int, num_residual_hiddens: int,
                  num_embeddings: int, embedding_dim: int, commitment_cost: float, decay: float = 0) -> None:
+        """
+        初始化VQVAE模型。
+
+        Args:
+            num_hiddens (int): 隐藏层通道数。
+            num_residual_layers (int): 残差块的数量。
+            num_residual_hiddens (int): 残差连接的隐藏层通道数。
+            num_embeddings (int): 量化后的向量数量。
+            embedding_dim (int): 量化后的向量维度。
+            commitment_cost (float): 承诺成本，用于量化损失。
+            decay (float, optional): 衰减率，用于EMA更新。 Defaults to 0.
+        """
         super().__init__()
         self._encoder = Encoder(2, num_hiddens, num_residual_layers, num_residual_hiddens)
         self._pre_vq_conv = nn.Conv2d(in_channels=num_hiddens,
@@ -304,3 +427,119 @@ class VQVAEModel(nn.Module):
         x_recon = self._decoder(quantized)
 
         return loss, x_recon, perplexity
+    
+
+def show(img):
+    """
+    显示给定的图像。
+
+    Args:
+        img (torch.Tensor): 要显示的图像。
+
+    Notes:
+        这个函数将给定的图像转换为numpy数组，调整通道顺序以适应matplotlib的显示格式，
+        并使用matplotlib显示图像。它还隐藏了坐标轴以获得更好的视觉效果。
+    """
+    npimg = img.numpy()  # 将torch.Tensor转换为numpy数组
+    fig = plt.imshow(np.transpose(npimg, (1,2,0)), interpolation='nearest')  # 调整通道顺序并显示图像
+    fig.axes.get_xaxis().set_visible(False)  # 隐藏x轴
+    fig.axes.get_yaxis().set_visible(False)  # 隐藏y轴
+
+
+if __name__ == "__main__":
+    # 使用小型数据集训练
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 检查是否有可用的CUDA设备
+
+    training_data = datasets.CIFAR10(root="data", train=True, download=True,
+                                     transform=transforms.Compose([
+                                         transforms.ToTensor(),  # 将数据转换为torch.Tensor
+                                         transforms.Normalize((0.5,0.5,0.5), (1.0,1.0,1.0))  # 数据标准化
+                                     ]))
+
+    validation_data = datasets.CIFAR10(root="data", train=False, download=True,
+                                       transform=transforms.Compose([
+                                           transforms.ToTensor(),
+                                           transforms.Normalize((0.5,0.5,0.5), (1.0,1.0,1.0))
+                                       ]))
+    
+    data_variance = np.var(training_data.data / 255.0)  # 计算训练数据的方差
+    
+    batch_size = 256  # 设置批次大小
+    num_training_updates = 15000  # 设置训练更新次数
+    num_hiddens = 128  # 设置隐藏层通道数
+    num_residual_hiddens = 32  # 设置残差连接的隐藏层通道数
+    num_residual_layers = 2  # 设置残差块的数量
+    embedding_dim = 64  # 设置量化后的向量维度
+    num_embeddings = 512  # 设置量化后的向量数量
+    commitment_cost = 0.25  # 设置承诺成本
+    decay = 0.99  # 设置衰减率
+    learning_rate = 1e-3  # 设置学习率
+
+    training_loader = DataLoader(training_data,
+                                 batch_size=batch_size,
+                                 shuffle=True,
+                                 pin_memory=True)  # 创建训练数据加载器
+    validation_loader = DataLoader(validation_data,
+                                   batch_size=32,
+                                   shuffle=True,
+                                   pin_memory=True)  # 创建验证数据加载器
+    
+    model = VQVAEModel(num_hiddens, num_residual_layers, num_residual_hiddens, num_embeddings,
+                       embedding_dim, commitment_cost, decay).to(device)  # 创建模型并移动到设备
+    
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, amsgrad=False)  # 创建优化器
+    
+    model.train()  # 设置模型为训练模式
+    train_res_recon_error = []  # 初始化重建误差列表
+    train_res_perplexity = []  # 初始化困惑度列表
+
+    for i in range(num_training_updates):
+        (data, _) = next(iter(training_loader))  # 从训练加载器中获取数据
+        data = data.to(device)  # 将数据移动到设备
+        optimizer.zero_grad()  # 清空优化器的梯度
+
+        vq_loss, data_recon, perplexity = model(data)  # 前向传播
+        recon_error = F.mse_loss(data_recon, data) / data_variance  # 计算重建误差
+        loss = recon_error + vq_loss  # 计算总损失
+        loss.backward()  # 反向传播
+
+        train_res_recon_error.append(recon_error.item())  # 记录重建误差
+        train_res_perplexity.append(perplexity.item())  # 记录困惑度
+
+        if (i+1) % 100 == 0:  # 每100次迭代打印一次
+            print('%d iterations' % (i+1))
+            print('recon_error: %.3f' % np.mean(train_res_recon_error[-100:]))  # 打印最近100次的平均重建误差
+            print('perplexity: %.3f' % np.mean(train_res_perplexity[-100:]))  # 打印最近100次的平均困惑度
+            print()
+
+    train_res_recon_error_smooth = savgol_filter(train_res_recon_error, 201, 7)  # 平滑重建误差
+    train_res_perplexity_smooth = savgol_filter(train_res_perplexity, 201, 7)  # 平滑困惑度
+
+    f = plt.figure(figsize=(16,8))  # 创建图形
+    ax = f.add_subplot(1,2,1)  # 创建子图
+    ax.plot(train_res_recon_error_smooth)  # 绘制平滑后的重建误差
+    ax.set_yscale('log')  # 设置y轴为对数刻度
+    ax.set_title('Smoothed NMSE.')  # 设置标题
+    ax.set_xlabel('iteration')  # 设置x轴标签
+
+    ax = f.add_subplot(1,2,2)  # 创建另一个子图
+    ax.plot(train_res_perplexity_smooth)  # 绘制平滑后的困惑度
+    ax.set_title('Smoothed Average codebook usage (perplexity).')  # 设置标题
+    ax.set_xlabel('iteration')  # 设置x轴标签
+
+    # 重建
+    model.eval()  # 设置模型为评估模式
+
+    (valid_originals, _) = next(iter(validation_loader))  # 从验证加载器中获取数据
+    valid_originals = valid_originals.to(device)  # 将数据移动到设备
+
+    vq_output_eval = model._pre_vq_conv(model._encoder(valid_originals))  # 量化前的卷积
+    _, valid_quantize, _, _ = model._vq_vae(vq_output_eval)  # 量化
+    valid_reconstructions = model._decoder(valid_quantize)  # 解码重建
+
+    # (train_originals, _) = next(iter(training_loader))
+    # train_originals = train_originals.to(device)
+    # _, train_reconstructions, _, _ = model._vq_vae(train_originals)
+
+    show(make_grid(valid_reconstructions.cpu().data)+0.5)  # 显示重建的验证集图像
+    show(make_grid(valid_originals.cpu()+0.5))  # 显示原始的验证集图像
