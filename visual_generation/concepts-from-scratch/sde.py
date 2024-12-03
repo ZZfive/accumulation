@@ -7,14 +7,23 @@
 @Desc    :   手敲SDE简洁实现
 '''
 from copy import deepcopy
-from typing import List, Callable
+from typing import List, Callable, Tuple
+
+import numpy as np
+from scipy import integrate
+import matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
+from torch.optim import Adam
+from torch.utils.data import DataLoader
+import torchvision.transforms as transforms
+from torchvision.datasets import MNIST
+from torchvision.utils import make_grid
 
 
+# 高斯随机特征的时间编码
 class TimeEncoding(nn.Module):
     """
     时间编码层，用于将时间信息转换为特征向量。
@@ -99,13 +108,15 @@ class ScoreNet(nn.Module):
         act (Callable): 激活函数。
         marginal_prob_std (Callable): 边际概率标准差函数。
     """
-    def __init__(self, marginal_prob_std: Callable, channels: List[int] = [32, 64, 128, 256],
+    def __init__(self, marginal_prob_std: Callable, input_channel: int = 1,
+                 channels: List[int] = [32, 64, 128, 256],
                  embed_dim : int = 256) -> None:
         """
         初始化评分网络。
 
         Args:
             marginal_prob_std (Callable): 边际概率标准差函数。
+            input_channel (int): 初始输入数据的通道维度，默认为1是后续使用MNIST数据集训练，其是只有灰度通道的一维图片。
             channels (List[int], optional): 卷积层的通道数列表。 Defaults to [32, 64, 128, 256].
             embed_dim (int, optional): 时间特征向量的嵌入维度。 Defaults to 256.
         """
@@ -115,7 +126,7 @@ class ScoreNet(nn.Module):
                                    nn.Linear(embed_dim, embed_dim))
         
         # 初始化卷积层、密集连接层和群归一化层
-        self.conv1 = nn.Conv2d(1, channels[0], 3, stride=1, bias=False)
+        self.conv1 = nn.Conv2d(input_channel, channels[0], 3, stride=1, bias=False)
         self.dense1 = Dense(embed_dim, channels[0])
         self.gnorm1 = nn.GroupNorm(4, num_channels=channels[0])
         self.conv2 = nn.Conv2d(channels[0], channels[1], 3, stride=2, bias=False)
@@ -140,14 +151,14 @@ class ScoreNet(nn.Module):
                                          output_padding=1)
         self.dense7 = Dense(embed_dim, channels[0])
         self.tgnorm2 = nn.GroupNorm(32, num_channels=channels[0])
-        self.tconv1 = nn.ConvTranspose2d(channels[0] + channels[0], 1, 3, stride=1)
+        self.tconv1 = nn.ConvTranspose2d(channels[0] + channels[0], input_channel, 3, stride=1)
 
         # 定义激活函数
         self.act = lambda x: x * torch.sigmoid(x)
         # 保存边际概率标准差函数
         self.marginal_prob_std = marginal_prob_std
     
-    def forward(self, x: torch.Tensor, t) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """
         前向传播，生成分数。
 
@@ -199,6 +210,9 @@ class ScoreNet(nn.Module):
         return h
 
 
+'''
+上述为主要模型架构定义，以下为SDE实际应用相关代码，以下为SDE定义为dx = \sigma^tdw时的代码实例
+'''
 def marginal_prob_std(t: float, sigma: float = 25.0, device: str = "cpu") -> torch.Tensor:
     """计算任意t时刻的扰动后条件高斯分布的标准差"""
     t = torch.tensor(t, device=device)
@@ -210,7 +224,7 @@ def diffusion_coeff(t: float, sigma: float = 25.0, device: str = "cpu") -> torch
     return torch.tensor(sigma**t, device=device)
 
 
-def loss_fn(score_model: nn.Module, x: torch.Tensor, marginal_prob_std: Callable, eps: float = 1e-5):
+def loss_fn(score_model: nn.Module, x: torch.Tensor, marginal_prob_std: Callable, eps: float = 1e-5) -> torch.Tensor:
     """
     计算模型的损失函数，用于训练SDE模型。
 
@@ -302,3 +316,182 @@ class EMA(nn.Module):
         """
         # 调用内部更新函数，直接设置EMA参数为模型参数
         self._update(model, update_fn=lambda e, m: m)
+
+
+'''
+当SDE定义为dx = \sigma^tdw，则逆SDE为dx=-\sigma^{2t} s_\theta(x,t)dt+\sigma^td\bar{w}；基于一些数值解法就能采样
+当使用欧拉数值采样时，用$\Delta_t$替代$dt$，用$z \sim N(0,g^2(t)\Delta_tI)$替代$d\omega$，
+对应得到x_{t-\Delta{t}} = x_t + \sigma^{2t} s_\theta(x,t)\Delta{t}+\sigma^t\sqrt{\Delta{t}}z_t
+'''
+def euler_sampler(score_model: nn.Module, size: Tuple[int, int], marginal_prob_std: Callable, diffusion_coeff: Callable,
+                  batch_size: int = 64, num_steps: int = 500, device: str = "cuda", eps: float = 1e-3) -> torch.Tensor:
+    # 定义时间为1时，即先验分布中的随机样本
+    t = torch.ones(batch_size, device=device)
+    init_x = torch.randn(batch_size, 1, size[0], size[1], device=device) * marginal_prob_std(t)[:, None, None, None]
+
+    # 定义采样的逆时间网格以及每一步的时间步长
+    time_steps = torch.linspace(1., eps, num_steps, device=device)
+    step_size = time_steps[0] - time_steps[1]
+
+    # 根据欧拉算法求解逆SDE
+    x = init_x
+    with torch.no_grad():
+        for time_step in time_steps:
+            batch_time_step = torch.ones(batch_size, device=device) * time_step
+            g = diffusion_coeff(batch_time_step)
+            mean_x = x + (g**2)[:, None, None, None] * score_model(x, batch_time_step) * step_size
+            x = mean_x + torch.sqrt(step_size) * g[:, None, None, None] * torch.randn_like(x)
+    
+    # 返回最后一步的期望值作为生成的样本
+    return mean_x
+
+
+'''
+除了单纯使用数值解法采样为，还可以将数值解法和模型解法结合在一起采样，如将欧拉采样和朗之万动力学采样结合，先使用欧拉采样获取一个时刻的预测值，
+再使用朗之万动力学采样精炼，前者称为predictor，后者称为corrector，故此种采样简称为PC-Sampler
+'''
+def pc_sampler(score_model: nn.Module, size: Tuple[int, int], marginal_prob_std: Callable, diffusion_coeff: Callable, c_iters: int = 10,
+               batch_size: int = 64, num_steps: int = 500, snr: float = 0.16, device: str = "cuda", eps: float = 1e-3) -> torch.Tensor:
+    # 定义时间为1时，即先验分布中的随机样本
+    t = torch.ones(batch_size, device=device)
+    init_x = torch.randn(batch_size, 1, size[0], size[1], device=device) * marginal_prob_std(t)[:, None, None, None]
+
+    # 定义采样的逆时间网格以及每一步的时间步长
+    time_steps = torch.linspace(1., eps, num_steps, device=device)
+    step_size = time_steps[0] - time_steps[1]
+
+    # 嵌套循环采样，外层遍历所有逆SDE数值求解，内层执行朗之万动力学采样
+    x = init_x
+    with torch.no_grad():
+          for time_step in time_steps:
+            batch_time_step = torch.ones(batch_size, device=device) * time_step
+
+            grad = score_model(x, batch_time_step)
+            grad_norm = torch.norm(grad.reshape(grad.shape[0], -1), dim=-1).mean()
+            noise_norm = np.sqrt(np.prod(x.shape[1:]))
+            langevin_step_size = 2 * (snr * noise_norm / grad_norm) ** 2
+
+            # 朗之万采样
+            for _ in range(c_iters):
+                x = x + langevin_step_size * grad + torch.sqrt(2 * langevin_step_size) * torch.rand_like(x)
+                grad = score_model(x, batch_time_step)
+                grad_norm = torch.norm(grad.reshape(grad.shape[0], -1), dim=-1).mean()
+                noise_norm = np.sqrt(np.prod(x.shape[1:]))
+                langevin_step_size = 2 * (snr * noise_norm / grad_norm) ** 2
+
+            g = diffusion_coeff(batch_time_step)
+            mean_x = x + (g**2)[:, None, None, None] * score_model(x, batch_time_step) * step_size
+            x = mean_x + torch.sqrt(step_size) * g[:, None, None, None] * torch.randn_like(x)
+    
+    # 返回最后一步的期望值作为生成的样本
+    return mean_x
+
+
+'''
+对于所有扩散过程，在求解逆SDE时，存在一个相应的确定性过程，其轨迹与SDE具有相同的边缘概率密度，即逆向求解的结果和逆SDE求解出来的样本服从相同分布。这个确定性过程称为概率流常微分方程：dx=[f(x,t)-\frac{1}{2}g(t)^2\nabla_x \log p_t(x)]dt
+当SDE定义为dx = \sigma^tdw时，对应逆ODE公式为dx=-\frac{1}{2}\sigma^{2t} s_\theta(x,t)dt
+'''
+def ode_sampler(score_model: nn.Module, size: Tuple[int, int], marginal_prob_std: Callable, diffusion_coeff: Callable,
+                batch_size: int = 64, atol: float = 1e-5, rtol: float = 1e-5, device: str = "cuda", eps: float = 1e-3,
+                z: torch.Tensor = None) -> torch.Tensor:
+    # 定义时间为1时，即先验分布中的随机样本
+    t = torch.ones(batch_size, device=device)
+    if z is None:
+        init_x = torch.randn(batch_size, 1, size[0], size[1], device=device) * marginal_prob_std(t)[:, None, None, None]
+    else:
+        init_x = z
+    
+    shape = init_x.shape
+
+    # 定义分数预测函数和常微分函数
+    def score_eval_wrapper(sample, time_steps):
+        sample = torch.tensor(sample, device=device, dtype=torch.float32).reshape(shape)
+        time_steps = torch.tensor(time_steps, device=device, dtype=torch.float32).reshape((sample.shape[0],))
+        with torch.no_grad():
+            score = score_model(sample, time_steps)
+        return score.cpu().numpy().reshape((-1,)).astype(np.float64)
+    
+    def ode_func(t, x):
+        time_steps = np.ones((shape[0],)) * t
+        g = diffusion_coeff(torch.tensor(t)).cpu().numpy()
+        return 0.5 * (g**2) * score_eval_wrapper(x, time_steps)
+    
+    # 调用常微分求解算子解t=teps时刻的值，即预测的样本
+    res = integrate.solve_ivp(ode_func, (1., eps), init_x.reshape(-1).cpu().numpy(), rtol=rtol, atol=atol, method="RK45")
+
+    x = torch.tensor(res.y[:, -1], device=device).reshape(shape)
+
+    return x
+
+
+
+if  __name__ == "__main__":
+    ## 基于MNIST数据集训练
+    # 设置设备为cuda
+    device = "cuda"
+    # 使用DataParallel将模型放在多个GPU上
+    score_model = torch.nn.DataParallel(ScoreNet(marginal_prob_std=marginal_prob_std))
+    # 将模型移动到设备上
+    score_model.to(device)
+
+    # 设置训练的轮数
+    n_epochs = 50
+    # 设置批次大小
+    batch_size = 32
+    # 设置学习率
+    lr = 1e-4
+
+    # 加载MNIST数据集
+    dataset = MNIST(".", train=True, transform=transforms.ToTensor(), download=True)
+    # 创建数据加载器
+    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+
+    # 创建优化器
+    optimizer = Adam(score_model.parameters(), lr=lr)
+    
+    # 创建EMA模型
+    ema_model = EMA(score_model)
+
+    # 开始训练
+    for epoch in range(n_epochs):
+        avg_loss = 0.
+        num_items = 0
+        for x, y in data_loader:
+            # 将数据移动到设备上
+            x = x.to(device)
+            # 清空优化器的梯度
+            optimizer.zero_grad()
+            # 计算损失
+            loss = loss_fn(score_model, x, marginal_prob_std)
+            # 反向传播
+            loss.backward()
+            # 更新参数
+            optimizer.step()
+            # 更新EMA模型
+            ema_model.update(score_model)
+            # 计算平均损失
+            avg_loss += loss.item() * x.shape[0]
+            num_items += x.shape[0]
+    
+    # 打印平均损失
+    print("Averagr ScoreMatching Loss: {:5f}".format(avg_loss / num_items))
+    # 保存模型参数
+    torch.save({"score_model": score_model.state_dict(),
+                "ema_model": ema_model.module.state_dict()},
+                "ckpt.pth")
+    
+    # 采样
+    sampler_batch_szie = 64
+    sampler = pc_sampler  # ["euler_sampler", "pc_sampler", "ode_sampler"]三者之一
+    
+    samples = sampler(score_model=score_model,
+                      batch_size=sampler_batch_szie,
+                      device=device)
+    
+    samples = samples.clamp(0.0, 1.0)
+    sample_grid = make_grid(samples, nrow=int(np.sqrt(sampler_batch_szie)))
+
+    plt.figure(figsize=(6, 6))
+    plt.axes("off")
+    plt.imshow(sample_grid.permute(1, 2, 0).cpu(), vmin=0., vmax=1.)
+    plt.show()
