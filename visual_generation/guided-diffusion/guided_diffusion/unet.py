@@ -475,7 +475,7 @@ class UNetModel(nn.Module):
         )
 
         if self.num_classes is not None:
-            self.label_emb = nn.Embedding(num_classes, time_embed_dim)
+            self.label_emb = nn.Embedding(num_classes, time_embed_dim)  # 类别条件的嵌入，与时间embed的输出维度一样
 
         ch = input_ch = int(channel_mult[0] * model_channels)
         self.input_blocks = nn.ModuleList(
@@ -649,7 +649,7 @@ class UNetModel(nn.Module):
 
         if self.num_classes is not None:
             assert y.shape == (x.shape[0],)
-            emb = emb + self.label_emb(y)
+            emb = emb + self.label_emb(y)  # 时间嵌入和类别条件嵌入组合
 
         h = x.type(self.dtype)
         for module in self.input_blocks:
@@ -876,7 +876,7 @@ class EncoderUNetModel(nn.Module):
         :param timesteps: a 1-D batch of timesteps.
         :return: an [N x K] Tensor of outputs.
         """
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))  # 转换后的时间嵌入
 
         results = []
         h = x.type(self.dtype)

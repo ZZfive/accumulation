@@ -54,10 +54,11 @@ def main():
     def cond_fn(x, t, y=None):
         assert y is not None
         with th.enable_grad():
-            x_in = x.detach().requires_grad_(True)
+            x_in = x.detach().requires_grad_(True)  # 将输入x从计算图分离，再设置为True后作为分类器的输入，以便计算梯度
             logits = classifier(x_in, t)
-            log_probs = F.log_softmax(logits, dim=-1)
-            selected = log_probs[range(len(logits)), y.view(-1)]
+            log_probs = F.log_softmax(logits, dim=-1)  # 得到每个类别的对数概率
+            selected = log_probs[range(len(logits)), y.view(-1)]  # 根据目标标签 y 从对数概率中选择对应的值
+            # 计算 selected 对 x_in 的梯度，并乘以 args.classifier_scale 进行缩放。返回的梯度可以用于更新生成模型的输入，以引导生成过程朝向目标类别
             return th.autograd.grad(selected.sum(), x_in)[0] * args.classifier_scale
 
     def model_fn(x, t, y=None):
@@ -71,7 +72,7 @@ def main():
         model_kwargs = {}
         classes = th.randint(
             low=0, high=NUM_CLASSES, size=(args.batch_size,), device=dist_util.dev()
-        )
+        )  # 为单次采样的batch中的每个样本随机生成一个标签
         model_kwargs["y"] = classes
         sample_fn = (
             diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop

@@ -441,32 +441,44 @@ def mpi_weighted_mean(comm, local_name2valcount):
 
 def configure(dir=None, format_strs=None, comm=None, log_suffix=""):
     """
-    If comm is provided, average all numerical stats across that comm
+    配置日志记录器。如果提供了comm，则会跨该comm平均所有数值统计信息。
     """
+    # 如果未指定目录，则尝试从环境变量中获取日志目录
     if dir is None:
         dir = os.getenv("OPENAI_LOGDIR")
+    # 如果环境变量中也没有指定目录，则生成一个临时目录
     if dir is None:
         dir = osp.join(
             tempfile.gettempdir(),
             datetime.datetime.now().strftime("openai-%Y-%m-%d-%H-%M-%S-%f"),
         )
+    # 确保目录路径是一个字符串
     assert isinstance(dir, str)
+    # 将目录路径转换为用户路径
     dir = os.path.expanduser(dir)
+    # 创建目录，如果目录不存在
     os.makedirs(os.path.expanduser(dir), exist_ok=True)
 
+    # 获取当前进程的排名
     rank = get_rank_without_mpi_import()
+    # 如果排名大于0，则在日志后缀中添加排名信息
     if rank > 0:
         log_suffix = log_suffix + "-rank%03i" % rank
 
+    # 如果未指定格式字符串，则根据排名从环境变量中获取默认格式
     if format_strs is None:
         if rank == 0:
             format_strs = os.getenv("OPENAI_LOG_FORMAT", "stdout,log,csv").split(",")
         else:
             format_strs = os.getenv("OPENAI_LOG_FORMAT_MPI", "log").split(",")
+    # 过滤掉空字符串
     format_strs = filter(None, format_strs)
+    # 根据格式字符串和目录创建输出格式列表
     output_formats = [make_output_format(f, dir, log_suffix) for f in format_strs]
 
+    # 创建并设置当前日志记录器
     Logger.CURRENT = Logger(dir=dir, output_formats=output_formats, comm=comm)
+    # 如果有输出格式，则记录日志信息
     if output_formats:
         log("Logging to %s" % dir)
 

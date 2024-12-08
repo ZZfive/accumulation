@@ -353,7 +353,7 @@ class GaussianDiffusion:
             return t.float() * (1000.0 / self.num_timesteps)
         return t
 
-    def condition_mean(self, cond_fn, p_mean_var, x, t, model_kwargs=None):
+    def condition_mean(self, cond_fn, p_mean_var, x, t, model_kwargs=None):  # DDPM的分类器条件导入
         """
         Compute the mean for the previous step, given a function cond_fn that
         computes the gradient of a conditional log probability with respect to
@@ -365,10 +365,10 @@ class GaussianDiffusion:
         gradient = cond_fn(x, self._scale_timesteps(t), **model_kwargs)
         new_mean = (
             p_mean_var["mean"].float() + p_mean_var["variance"] * gradient.float()
-        )
+        )  # new_mean = mean + std * grad(分类器)
         return new_mean
 
-    def condition_score(self, cond_fn, p_mean_var, x, t, model_kwargs=None):
+    def condition_score(self, cond_fn, p_mean_var, x, t, model_kwargs=None):  # DDIM的分类器条件导入
         """
         Compute what the p_mean_variance output would have been, should the
         model's score function be conditioned by cond_fn.
@@ -434,7 +434,7 @@ class GaussianDiffusion:
         if cond_fn is not None:
             out["mean"] = self.condition_mean(
                 cond_fn, out, x, t, model_kwargs=model_kwargs
-            )
+            )  # 使用了分类器条件后，相当于是对原始分布中的mean进行了偏移，此处就是计算新的mean
         sample = out["mean"] + nonzero_mask * th.exp(0.5 * out["log_variance"]) * noise
         return {"sample": sample, "pred_xstart": out["pred_xstart"]}
 
