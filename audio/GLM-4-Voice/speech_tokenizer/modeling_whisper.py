@@ -65,26 +65,33 @@ class QuantizedBaseModelOutput(BaseModelOutput):
     quantized_token_ids: Optional[torch.LongTensor] = None
 
 
+# VQ向量量化的核心实现函数
 def vector_quantize(inputs, codebook):
     embedding_size = codebook.size(1)
     inputs_flatten = inputs.reshape(-1, embedding_size)
-    codebook_sqr = torch.sum(codebook ** 2, dim=1)
-    inputs_sqr = torch.sum(inputs_flatten ** 2, dim=1, keepdim=True)
-    # Compute the distances to the codebook
+    codebook_sqr = torch.sum(codebook ** 2, dim=1)  # ||y||²
+    inputs_sqr = torch.sum(inputs_flatten ** 2, dim=1, keepdim=True)  # ||x||²
+    # Compute the distances to the codebook   ||x-y||² = ||x||² + ||y||² - 2x·y
     distances = torch.addmm(codebook_sqr + inputs_sqr,
                             inputs_flatten, codebook.t(), alpha=-2.0, beta=1.0)
 
-    _, indices_flatten = torch.min(distances, dim=1)
-    codes_flatten = torch.index_select(codebook, dim=0,
-                                       index=indices_flatten)
-    codes = codes_flatten.view_as(inputs)
+    _, indices_flatten = torch.min(distances, dim=1)  # 找到最近的码字索引
+    codes_flatten = torch.index_select(codebook, dim=0, index=indices_flatten)  # 基于索引从codebook中获取对应的向量
+    codes = codes_flatten.view_as(inputs)  # 恢复原始形状
     return codes, indices_flatten, distances
 
 
 def mse_loss_with_mask(input, target, mask):
+    # 1. 计算每个元素的MSE,保留所有维度
     loss = torch.nn.functional.mse_loss(input, target, reduction='none')
+    
+    # 2. 对最后一个维度求平均
     loss = loss.mean(dim=-1)
+    
+    # 3. 应用掩码
     loss = loss * mask
+    
+    # 4. 计算掩码区域的平均损失
     return loss.sum() / mask.sum()
 
 
@@ -113,22 +120,24 @@ class CausalConv1d(nn.Conv1d):
             **kwargs
         )
 
-        self.left_padding = dilation * (kernel_size - 1)
+        self.left_padding = dilation * (kernel_size - 1)  # 计算左填充的大小
 
     def forward(self, inp):
-        x = torch.nn.functional.pad(inp.unsqueeze(2), (self.left_padding, 0, 0, 0)).squeeze(2)
+        x = torch.nn.functional.pad(inp.unsqueeze(2),  # 增加一个维度用于填充
+                                    (self.left_padding, 0, 0, 0)  # 只在左侧填充
+                                ).squeeze(2)  # 移除临时添加的维度
 
-        return super(CausalConv1d, self).forward(x)
+        return super(CausalConv1d, self).forward(x)  # 调用父类的forward方法
 
 
 # Copied from transformers.models.llama.modeling_llama._prepare_4d_causal_attention_mask_with_cache_position
-def _prepare_4d_causal_attention_mask_with_cache_position(
-        attention_mask: torch.Tensor,
-        sequence_length: int,
-        target_length: int,
-        dtype: torch.dtype,
-        device: torch.device,
-        min_dtype: float,
+def _prepare_4d_causal_attention_mask_with_cache_position(  # 创建一个因果4D掩码
+        attention_mask: torch.Tensor,  # 输入的注意力掩码
+        sequence_length: int,  # 输入序列的长度
+        target_length: int,  # 目标长度
+        dtype: torch.dtype,  # 数据类型
+        device: torch.device,  # 设备
+        min_dtype: float,  # 最小值
         cache_position: torch.Tensor,
         batch_size: int,
 ):
@@ -158,15 +167,15 @@ def _prepare_4d_causal_attention_mask_with_cache_position(
         # In this case we assume that the mask comes already in inverted form and requires no inversion or slicing.
         causal_mask = attention_mask
     else:
-        causal_mask = torch.full((sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device)
+        causal_mask = torch.full((sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device)  # 创建一个全为min_dtype的矩阵
         if sequence_length != 1:
-            causal_mask = torch.triu(causal_mask, diagonal=1)
-        causal_mask *= torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
-        causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)
+            causal_mask = torch.triu(causal_mask, diagonal=1)  # 生成上三角掩码，确保当前位置只能看到之前的位置
+        causal_mask *= torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)  # 根据cache_position生成掩码
+        causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)  # 扩展到batch_size
         if attention_mask is not None:
             causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
             mask_length = attention_mask.shape[-1]
-            padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]
+            padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]  # 将causal_mask和attention_mask相加
             padding_mask = padding_mask == 0
             causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
                 padding_mask, min_dtype
@@ -175,6 +184,7 @@ def _prepare_4d_causal_attention_mask_with_cache_position(
     return causal_mask
 
 
+# 生成正弦波用于位置嵌入，绝对位置编码
 def sinusoids(length: int, channels: int, max_timescale: float = 10000) -> torch.Tensor:
     """Returns sinusoids for positional embedding"""
     if channels % 2 != 0:
@@ -194,23 +204,23 @@ def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, decoder_start
     """
     shifted_input_ids = input_ids.new_zeros(input_ids.shape)
     shifted_input_ids[:, 1:] = input_ids[:, :-1].clone()
-    shifted_input_ids[:, 0] = decoder_start_token_id
+    shifted_input_ids[:, 0] = decoder_start_token_id  # 将decoder_start_token_id填充到第一个位置
 
     if pad_token_id is None:
         raise ValueError("self.model.config.pad_token_id has to be defined.")
     # replace possible -100 values in labels by `pad_token_id`
-    shifted_input_ids.masked_fill_(shifted_input_ids == -100, pad_token_id)
+    shifted_input_ids.masked_fill_(shifted_input_ids == -100, pad_token_id)  # 将-100替换为pad_token_id
 
     return shifted_input_ids
 
 
 # Copied from transformers.models.wav2vec2.modeling_wav2vec2._compute_mask_indices
-def _compute_mask_indices(
-        shape: Tuple[int, int],
-        mask_prob: float,
-        mask_length: int,
-        attention_mask: Optional[torch.LongTensor] = None,
-        min_masks: int = 0,
+def _compute_mask_indices(  # 是一种在随机轴上随机对音频创建掩码实现数据增强的方法
+        shape: Tuple[int, int],  # 输入的形状
+        mask_prob: float,  # 掩码概率
+        mask_length: int,  # 掩码长度
+        attention_mask: Optional[torch.LongTensor] = None,  # 一个（右填充的）注意掩码，它独立地缩短每个批次维度的特征轴
+        min_masks: int = 0,  # 最小掩码数
 ) -> np.ndarray:
     """
     Computes random mask spans for a given shape. Used to implement [SpecAugment: A Simple Data Augmentation Method for
@@ -243,12 +253,12 @@ def _compute_mask_indices(
     # epsilon is used for probabilistic rounding
     epsilon = np.random.rand(1).item()
 
-    def compute_num_masked_span(input_length):
+    def compute_num_masked_span(input_length):  # 给定输入长度，计算应该掩码多少个跨度
         """Given input length, compute how many spans should be masked"""
-        num_masked_span = int(mask_prob * input_length / mask_length + epsilon)
-        num_masked_span = max(num_masked_span, min_masks)
+        num_masked_span = int(mask_prob * input_length / mask_length + epsilon)  # 计算应该掩码的跨度数
+        num_masked_span = max(num_masked_span, min_masks)  # 确保掩码数至少为min_masks
 
-        # make sure num masked span <= sequence_length
+        # make sure num masked span <= sequence_length，确保掩码数不超过序列长度
         if num_masked_span * mask_length > sequence_length:
             num_masked_span = sequence_length // mask_length
 
@@ -260,28 +270,28 @@ def _compute_mask_indices(
 
     # compute number of masked spans in batch
     input_lengths = (
-        attention_mask.sum(-1).detach().tolist()
+        attention_mask.sum(-1).detach().tolist()  # 计算注意力掩码中每个序列的长度
         if attention_mask is not None
-        else [sequence_length for _ in range(batch_size)]
-    )
+        else [sequence_length for _ in range(batch_size)]  # 如果没有注意力掩码，则假设所有序列的长度都为sequence_length
+    )  # 计算每个样本的长度
 
     # SpecAugment mask to fill
-    spec_aug_mask = np.zeros((batch_size, sequence_length), dtype=bool)
-    spec_aug_mask_idxs = []
+    spec_aug_mask = np.zeros((batch_size, sequence_length), dtype=bool)  # 初始化掩码矩阵
+    spec_aug_mask_idxs = []  # 初始化掩码索引列表
 
     max_num_masked_span = compute_num_masked_span(sequence_length)
 
     if max_num_masked_span == 0:
         return spec_aug_mask
 
-    for input_length in input_lengths:
+    for input_length in input_lengths:  # 生成掩码索引
         # compute num of masked spans for this input
-        num_masked_span = compute_num_masked_span(input_length)
+        num_masked_span = compute_num_masked_span(input_length)  # 计算每个样本的掩码跨度数
 
         # get random indices to mask
         spec_aug_mask_idx = np.random.choice(
             np.arange(input_length - (mask_length - 1)), num_masked_span, replace=False
-        )
+        )  # 从[0, input_length - (mask_length - 1))中随机选择num_masked_span个索引
 
         # pick first sampled index that will serve as a dummy index to pad vector
         # to ensure same dimension for all batches due to probabilistic rounding
@@ -2094,7 +2104,7 @@ class WhisperVQForConditionalGeneration(WhisperGenerationMixin, WhisperPreTraine
 
             if decoder_position_ids is not None:
                 decoder_position_ids = decoder_position_ids[:, remove_prefix_length:]
-                # This `clone` call is needed to avoid recapturing cuda graphs with `torch.compile`'s  `mode="reduce-overhead`, as otherwise the input `position_ids` would have various stride during the decoding. Here, simply using `.contiguous()` is not sufficient as in the batch size = 1 case, `position_ids` is already contiguous but with varying stride which retriggers a capture.
+                # This `clone` call is needed to avoid recapturing cuda graphs with `torch.compile`'s  `mode="reduce-overhead", as otherwise the input `position_ids` would have various stride during the decoding. Here, simply using `.contiguous()` is not sufficient as in the batch size = 1 case, `position_ids` is already contiguous but with varying stride which retriggers a capture.
                 decoder_position_ids = decoder_position_ids.clone(memory_format=torch.contiguous_format)
 
         if cache_position is None:

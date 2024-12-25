@@ -24,17 +24,21 @@ from threading import Thread
 from queue import Queue
 
 
-class TokenStreamer(BaseStreamer):
+class TokenStreamer(BaseStreamer):  # 继承自BaseStreamer的流式处理器，用于生成的token流式输出
     def __init__(self, skip_prompt: bool = False, timeout=None):
-        self.skip_prompt = skip_prompt
+        self.skip_prompt = skip_prompt  # 是否跳过prompt
 
         # variables used in the streaming process
-        self.token_queue = Queue()
-        self.stop_signal = None
-        self.next_tokens_are_prompt = True
-        self.timeout = timeout
+        self.token_queue = Queue()  # 用于存储生成的token，作为生成线程和主线程之间的中间存储，queue是线程安全的，可以安全地在不同线程间传递数据
+        self.stop_signal = None  # 停止信号
+        self.next_tokens_are_prompt = True  # 下一个token是否是prompt
+        self.timeout = timeout  # 超时时间
 
     def put(self, value):
+        """
+        在生成线程中被调用
+        model.generate() -> transformers内部 -> put()
+        """
         if len(value.shape) > 1 and value.shape[0] > 1:
             raise ValueError("TextStreamer only supports batch size 1")
         elif len(value.shape) > 1:
@@ -48,19 +52,32 @@ class TokenStreamer(BaseStreamer):
             self.token_queue.put(token)
 
     def end(self):
-        self.token_queue.put(self.stop_signal)
+        self.token_queue.put(self.stop_signal)  # 将停止信号添加到token队列中
 
+    # 实现迭代器接口，允许流式获取token
     def __iter__(self):
-        return self
+        return self  # 返回迭代器
 
     def __next__(self):
-        value = self.token_queue.get(timeout=self.timeout)
+        """
+        在主线程中被调用
+        for token in streamer -> __next__()
+        """
+        value = self.token_queue.get(timeout=self.timeout)  # 从token队列中获取token，如果队列为空会阻塞等待
         if value == self.stop_signal:
-            raise StopIteration()
+            raise StopIteration()  # 如果获取到停止信号，则抛出StopIteration异常
         else:
             return value
 
 
+"""
+生成线程(model.generate)  -->  Streamer(Queue)  -->  主线程(yield给客户端)
+     |                          |                        |
+     |                          |                        |
+生成token                    存储token                获取token
+     ↓                          ↓                        ↓
+调用streamer.put()        token进入队列          从队列获取token并yield
+"""
 class ModelWorker:
     def __init__(self, model_path, dtype="bfloat16", device='cuda'):
         self.device = device
@@ -89,11 +106,11 @@ class ModelWorker:
         top_p = float(params.get("top_p", 1.0))
         max_new_tokens = int(params.get("max_new_tokens", 256))
 
-        inputs = tokenizer([prompt], return_tensors="pt")
+        inputs = tokenizer([prompt], return_tensors="pt")  # 对输入进行编码
         inputs = inputs.to(self.device)
         streamer = TokenStreamer(skip_prompt=True)
         thread = Thread(
-            target=model.generate,
+            target=model.generate,  # transformers实现的generate实现中会自动调用streamer.put()和streamer.end()
             kwargs=dict(
                 **inputs,
                 max_new_tokens=int(max_new_tokens),
@@ -102,8 +119,9 @@ class ModelWorker:
                 streamer=streamer
             )
         )
-        thread.start()
-        for token_id in streamer:
+        thread.start()  # 启动线程
+        for token_id in streamer:  # 会调用streamer的__next__()方法
+            # 流式返回生成的token
             yield (json.dumps({"token_id": token_id, "error_code": 0}) + "\n").encode()
 
     def generate_stream_gate(self, params):
