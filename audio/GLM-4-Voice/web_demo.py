@@ -57,8 +57,8 @@ if __name__ == "__main__":
                                      device=device)
 
         # Speech tokenizer
-        whisper_model = WhisperVQEncoder.from_pretrained(args.tokenizer_path).eval().to(device)
-        feature_extractor = WhisperFeatureExtractor.from_pretrained(args.tokenizer_path)
+        whisper_model = WhisperVQEncoder.from_pretrained(args.tokenizer_path).eval().to(device)  # from_pretrained方法会自动从指定的路径下读取config.json文件初始化模型后在加载模型权重
+        feature_extractor = WhisperFeatureExtractor.from_pretrained(args.tokenizer_path)  # 从指定的路径下读取preprocessor_config.json文件初始化特征提取器
 
 
     def clear_fn():

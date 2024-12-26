@@ -95,7 +95,24 @@ def mse_loss_with_mask(input, target, mask):
     return loss.sum() / mask.sum()
 
 
-class CausalConv1d(nn.Conv1d):
+# 标准卷积的感受野(以kernel_size=3为例)
+"""
+输出[t]可以看到输入[t-1, t, t+1]
+t-1  t  t+1
+ |   |   |
+   \ | /
+    [t]
+"""
+
+# 因果卷积的感受野
+"""
+输出[t]只能看到输入[t-2, t-1, t]
+t-2 t-1  t
+ |   |   |
+   \ | /
+    [t]
+"""
+class CausalConv1d(nn.Conv1d):  # 因果卷积
     def __init__(
         self,
         in_channels,
@@ -123,6 +140,7 @@ class CausalConv1d(nn.Conv1d):
         self.left_padding = dilation * (kernel_size - 1)  # 计算左填充的大小
 
     def forward(self, inp):
+        # 普通卷积是在左右两侧填充，而因果卷积是全部在左侧填充，使得相同卷积核下，当前时间步只能看到过去的信息，看不到未来的信息
         x = torch.nn.functional.pad(inp.unsqueeze(2),  # 增加一个维度用于填充
                                     (self.left_padding, 0, 0, 0)  # 只在左侧填充
                                 ).squeeze(2)  # 移除临时添加的维度
@@ -336,9 +354,9 @@ def _compute_mask_indices(  # 是一种在随机轴上随机对音频创建掩�
 
 class WhisperPositionalEmbedding(nn.Embedding):
     def __init__(self, num_positions: int, embedding_dim: int, padding_idx: Optional[int] = None):
-        super().__init__(num_positions, embedding_dim)
+        super().__init__(num_positions, embedding_dim)  # num_positions是位置编码的最大长度
 
-    def forward(self, input_ids, past_key_values_length=0, position_ids=None):
+    def forward(self, input_ids, past_key_values_length=0, position_ids=None):  # 支持自定义位置ID
         if position_ids is None:
             return self.weight[past_key_values_length: past_key_values_length + input_ids.shape[1]]
         else:
@@ -363,7 +381,7 @@ class WhisperAttention(nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.dropout = dropout
-        self.head_dim = embed_dim // num_heads
+        self.head_dim = embed_dim // num_heads  # 每个头的维度
         self.config = config
 
         if (self.head_dim * num_heads) != self.embed_dim:
@@ -372,8 +390,8 @@ class WhisperAttention(nn.Module):
                 f" and `num_heads`: {num_heads})."
             )
         self.scaling = self.head_dim ** -0.5
-        self.is_decoder = is_decoder
-        self.is_causal = is_causal
+        self.is_decoder = is_decoder  # 表示是否是tranfomer的解码器结构，如果是则包含自注意力和交叉注意力，否则只包含自注意力
+        self.is_causal = is_causal  # 表示是否是因果注意力，即只允许当前位置看到之前的位置
 
         if layer_idx is None and is_decoder:
             logger.warning_once(
@@ -406,8 +424,8 @@ class WhisperAttention(nn.Module):
 
         # if key_value_states are provided this layer is used as a cross-attention layer
         # for the decoder
-        is_cross_attention = key_value_states is not None
-        bsz, tgt_len, _ = hidden_states.size()
+        is_cross_attention = key_value_states is not None  # 是否是交叉注意力
+        bsz, tgt_len, _ = hidden_states.size()  # 获取隐藏状态的形状
 
         # get query proj
         query_states = self._shape(self.q_proj(hidden_states) * self.scaling, tgt_len, bsz)
@@ -711,7 +729,7 @@ class WhisperVQEncoderLayer(nn.Module):
             num_heads=config.encoder_attention_heads,
             dropout=config.attention_dropout,
             config=config,
-            is_causal=is_causal
+            is_causal=is_causal  # 默认为False，即不使用因果注意力，使用双向注意力
         )
         self.is_causal = is_causal
         if self.is_causal:
@@ -775,7 +793,7 @@ class WhisperVQEncoderLayer(nn.Module):
         return outputs
 
 
-class WhisperDecoderLayer(nn.Module):
+class WhisperDecoderLayer(nn.Module):  # 包含自注意力和交叉注意力
     def __init__(self, config: WhisperVQConfig, layer_idx: int = None):
         super().__init__()
         self.embed_dim = config.d_model
@@ -785,7 +803,7 @@ class WhisperDecoderLayer(nn.Module):
             num_heads=config.decoder_attention_heads,
             dropout=config.attention_dropout,
             is_decoder=True,
-            is_causal=True,
+            is_causal=True,  # 默认为True，即使用因果注意力，即掩码自注意力计算
             layer_idx=layer_idx,
             config=config,
         )
@@ -1079,11 +1097,11 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
         self.layerdrop = config.encoder_layerdrop
 
         embed_dim = config.d_model
-        self.num_mel_bins = config.num_mel_bins
+        self.num_mel_bins = config.num_mel_bins  # mel的维度，一般默认是80
         self.padding_idx = config.pad_token_id
-        self.max_source_positions = config.max_source_positions
-        self.embed_scale = math.sqrt(embed_dim) if config.scale_embedding else 1.0
-        if config.encoder_causal_convolution:
+        self.max_source_positions = config.max_source_positions  # 最大位置编码长度
+        self.embed_scale = math.sqrt(embed_dim) if config.scale_embedding else 1.0  # 嵌入缩放因子
+        if config.encoder_causal_convolution:  # 是否使用因果卷积
             conv_class = CausalConv1d
         else:
             conv_class = nn.Conv1d
@@ -1091,7 +1109,7 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
         self.conv2 = conv_class(embed_dim, embed_dim, kernel_size=3, stride=2, padding=1)
 
         self.embed_positions = nn.Embedding(self.max_source_positions, embed_dim)
-        self.embed_positions.requires_grad_(False)
+        self.embed_positions.requires_grad_(False)  # 冻结位置编码
         if config.quantize_encoder_only:
             self.layers = nn.ModuleList([WhisperVQEncoderLayer(config,
                                                                is_causal=config.encoder_causal_attention or config.quantize_causal_encoder)
@@ -1102,11 +1120,11 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
                                          range(config.encoder_layers)])
             self.layer_norm = nn.LayerNorm(config.d_model)
 
-        self.gradient_checkpointing = False
+        self.gradient_checkpointing = False  # 是否使用梯度检查点
         # Parameters related to pooling layer
-        self.pooling_layer = None
+        self.pooling_layer = None  # 池化层
         # Parameters related to quantization layer
-        self.codebook = None
+        self.codebook = None  # 量化层的codebook
         self.embed_positions2 = None
         self.quantize_loss = None
         self.num_active_codes = None
@@ -1115,8 +1133,8 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
         self.save_hidden_dir = None
         self.save_hidden_position = None
         # Initialize weights and apply final processing
-        self.init_pooling_layer(config)
-        self.init_quantize_layer(config)
+        self.init_pooling_layer(config)  # 初始化池化层
+        self.init_quantize_layer(config)  # 初始化量化层
         self.post_init()
 
     def init_pooling_layer(self, config: WhisperVQConfig):
@@ -1131,20 +1149,20 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
     def init_quantize_layer(self, config: WhisperVQConfig, quantize_load_codebook=None):
         if config.quantize_vocab_size is not None:
             if config.pooling_position is not None:
-                assert config.quantize_position >= config.pooling_position
-            self.codebook = nn.Embedding(config.quantize_vocab_size, self.config.d_model)
+                assert config.quantize_position >= config.pooling_position  # 量化位置必须大于池化位置
+            self.codebook = nn.Embedding(config.quantize_vocab_size, self.config.d_model)  # 初始化codebook
             if quantize_load_codebook is not None:
                 init_codes = np.load(quantize_load_codebook)
-                self.codebook.weight.data.copy_(torch.from_numpy(init_codes))
+                self.codebook.weight.data.copy_(torch.from_numpy(init_codes))  # 从文件中加载预训练的codebook
             max_source_positions = self.max_source_positions
             if config.pooling_kernel_size is not None:
                 max_source_positions = math.ceil(max_source_positions / self.config.pooling_kernel_size)
-            self.embed_positions2 = nn.Embedding(max_source_positions, self.config.d_model)
-            self.embed_positions2.weight.data.copy_(self.embed_positions.weight.data[:max_source_positions])
-            if config.quantize_ema_decay is not None:
-                self.codebook.weight.requires_grad = False
-                self.register_buffer("ema_count", torch.ones(config.quantize_vocab_size, dtype=torch.float))
-                self.register_buffer("ema_weight", self.codebook.weight.data.clone().float())
+            self.embed_positions2 = nn.Embedding(max_source_positions, self.config.d_model)  # 初始化decoder之前的位置编码
+            self.embed_positions2.weight.data.copy_(self.embed_positions.weight.data[:max_source_positions])  # 将的embed_positions的值复制到embed_positions2中
+            if config.quantize_ema_decay is not None:  # 是否使用EMA
+                self.codebook.weight.requires_grad = False  # 冻结codebook的权重
+                self.register_buffer("ema_count", torch.ones(config.quantize_vocab_size, dtype=torch.float))  # 初始化ema_count
+                self.register_buffer("ema_weight", self.codebook.weight.data.clone().float())  # 初始化ema_weight
 
     def _freeze_parameters(self):
         for param in self.parameters():
@@ -1157,33 +1175,44 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
     def set_input_embeddings(self, value: nn.Module):
         self.conv1 = value
 
+    """
+    这种掩码结构允许:
+    1. 块内的token可以相互看见(块对角部分)
+    2. 后面的token可以看见之前的所有token(因果部分)
+    3. 保持了整体的因果性(不能看见未来)
+
+    适用场景:
+    1. 长序列处理
+    2. 块式自注意力
+    3. 局部-全局注意力混合
+    """
     def get_block_causal_attention_mask(self, attention_mask, block_size=50):
         dtype = self.dtype
-        batch_size, seq_length = attention_mask.shape
-        causal_mask = torch.torch.tril(
+        batch_size, seq_length = attention_mask.shape  # 获取输入的形状，如[1, 60]
+        causal_mask = torch.torch.tril(  # 创建一个下三角矩阵，用于实现因果注意力
             torch.ones(1, seq_length, seq_length, dtype=torch.bool, device=attention_mask.device))
         block_square_mask = []
-        for start in range(0, seq_length, block_size):
+        for start in range(0, seq_length, block_size):  # 为每个block创建掩码矩阵
             end = min(start + block_size, seq_length)
             length = end - start
-            block_square_mask.append(causal_mask.new_ones((length, length)))
-        block_square_mask = torch.block_diag(*block_square_mask)
-        block_causal_mask = causal_mask | block_square_mask
-        block_causal_mask = block_causal_mask & attention_mask[:, None, :]
+            block_square_mask.append(causal_mask.new_ones((length, length)))  # 创建块内的全1方形矩阵
+        block_square_mask = torch.block_diag(*block_square_mask)  # 将所有块的方形矩阵拼接成一个大的方形矩阵，如[1, 60, 60]
+        block_causal_mask = causal_mask | block_square_mask  # 将因果掩码和块内掩码进行或运算，如[1, 60, 60]
+        block_causal_mask = block_causal_mask & attention_mask[:, None, :]  # 将注意力掩码与因果掩码进行与运算，如[1, 60, 60]
         block_causal_mask = block_causal_mask.to(dtype=dtype)  # fp16 compatibility
-        block_causal_mask = (1.0 - block_causal_mask) * torch.finfo(dtype).min
-        block_causal_mask = block_causal_mask.unsqueeze(1)
+        block_causal_mask = (1.0 - block_causal_mask) * torch.finfo(dtype).min  # 将0/1转换为-inf/0，如[1, 60, 60]
+        block_causal_mask = block_causal_mask.unsqueeze(1)  # 在第二个维度上增加一个维度，如[1, 1, 60, 60]
         return block_causal_mask
 
     def forward(
             self,
-            input_features,
-            attention_mask=None,
-            head_mask=None,
-            output_attentions=None,
-            output_hidden_states=None,
-            return_dict=None,
-            quantized_token_ids=None
+            input_features,  # 从音频中抽取的mel谱图
+            attention_mask=None,  # 注意力掩码
+            head_mask=None,  # 头部掩码
+            output_attentions=None,  # 是否返回注意力权重
+            output_hidden_states=None,  # 是否返回所有层的隐状态
+            return_dict=None,  # 是否返回字典格式
+            quantized_token_ids=None  # 量化后的token id
     ):
         r"""
         Args:
@@ -1217,29 +1246,30 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
         #         f"Whisper expects the mel input features to be of length {expected_seq_length}, but found {input_features.shape[-1]}. Make sure to pad the input mel features to {expected_seq_length}."
         #     )
 
-        batch_size, feature_size, seq_length = input_features.shape
-        seq_length = seq_length // (self.conv1.stride[0] * self.conv2.stride[0])
+        batch_size, feature_size, seq_length = input_features.shape  # 获取输入的形状， 如[1, 128, 120]
+        seq_length = seq_length // (self.conv1.stride[0] * self.conv2.stride[0])  # 输入在两次一维卷积计算后会缩短，重新计算长度，如120//(1*2)=60
 
-        attention_mask = attention_mask[:, :: self.conv1.stride[0] * self.conv2.stride[0]]
-        if self.config.quantize_causal_block_size is not None:
-            extended_attention_mask = self.get_block_causal_attention_mask(attention_mask,
-                                                                           block_size=self.config.quantize_causal_block_size)
+        attention_mask = attention_mask[:, :: self.conv1.stride[0] * self.conv2.stride[0]]  # 调整注意力掩码以匹配卷积后的序列长度
+        if self.config.quantize_causal_block_size is not None:  # 使用因果卷积，结果的shape为[1, 1, 60, 60]
+            extended_attention_mask = self.get_block_causal_attention_mask(attention_mask,  # 获取因果卷积的注意力掩码，attention_mask原始尺寸可能为[1, 60]
+                                                                           block_size=self.config.quantize_causal_block_size)  # 此处的quantize_causal_block_size为200
         else:
-            extended_attention_mask = self.get_extended_attention_mask(attention_mask, (batch_size, seq_length))
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+            extended_attention_mask = self.get_extended_attention_mask(attention_mask, (batch_size, seq_length))  # 获取标准卷积的注意力掩码
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions  # 是否返回注意力权重
         output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states  # 是否返回所有层的隐状态
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        inputs_embeds = nn.functional.gelu(self.conv1(input_features))
-        inputs_embeds = nn.functional.gelu(self.conv2(inputs_embeds))
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict  # 是否返回字典格式
+        inputs_embeds = nn.functional.gelu(self.conv1(input_features))  # 对输入进行卷积操作
+        inputs_embeds = nn.functional.gelu(self.conv2(inputs_embeds))  # 对输入进行卷积操作
 
-        inputs_embeds = inputs_embeds.permute(0, 2, 1)
-        embed_pos = self.embed_positions.weight
+        inputs_embeds = inputs_embeds.permute(0, 2, 1)  # 将输入嵌入的维度从[batch_size, seq_length, embed_dim]转换为[batch_size, embed_dim, seq_length]
+        embed_pos = self.embed_positions.weight  # 获取位置编码
 
-        hidden_states = inputs_embeds + embed_pos[:seq_length]
+        hidden_states = inputs_embeds + embed_pos[:seq_length]  # 将输入嵌入和位置编码相加
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
 
+        # 初始化输出收集器
         encoder_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
 
@@ -1249,20 +1279,20 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
             assert head_mask.size()[0] == (
                 len(self.layers)
             ), f"The head_mask should be specified for {len(self.layers)} layers, but it is for {head_mask.size()[0]}."
-        for idx, encoder_layer in enumerate(self.layers):
+        for idx, encoder_layer in enumerate(self.layers):  # 遍历所有编码层
             if output_hidden_states:
-                encoder_states = encoder_states + (hidden_states,)
+                encoder_states = encoder_states + (hidden_states,)  # 收集所有层的隐状态
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
             to_drop = False
             if self.training:
-                dropout_probability = torch.rand([])
+                dropout_probability = torch.rand([])  # 随机生成一个张量
                 if dropout_probability < self.layerdrop:  # skip the layer
-                    to_drop = True
+                    to_drop = True  # 如果随机生成的张量小于layerdrop，则跳过该层
 
             if to_drop:
-                layer_outputs = (None, None)
+                layer_outputs = (None, None)  # 如果跳过该层，则返回None
             else:
-                if self.gradient_checkpointing and self.training:
+                if self.gradient_checkpointing and self.training:  # 是否使用梯度检查点
                     layer_outputs = self._gradient_checkpointing_func(
                         encoder_layer.__call__,
                         hidden_states,
@@ -1270,7 +1300,7 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
                         (head_mask[idx] if head_mask is not None else None),
                         output_attentions,
                     )
-                else:
+                else:  # 正常前向传播
                     layer_outputs = encoder_layer(
                         hidden_states,
                         extended_attention_mask,
@@ -1281,14 +1311,14 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
                 hidden_states = layer_outputs[0]
 
             if output_attentions:
-                all_attentions = all_attentions + (layer_outputs[1],)
+                all_attentions = all_attentions + (layer_outputs[1],)  # 收集所有层的注意力权重
             if idx + 1 == self.config.pooling_position and self.config.pooling_kernel_size is not None:
-                hidden_states = hidden_states.permute(0, 2, 1)
-                if hidden_states.shape[-1] % self.config.pooling_kernel_size != 0:
+                hidden_states = hidden_states.permute(0, 2, 1)  # 将hidden_states的维度从[batch_size, seq_length, embed_dim]转换为[batch_size, embed_dim, seq_length]
+                if hidden_states.shape[-1] % self.config.pooling_kernel_size != 0:  # 如果seq_length不能被pooling_kernel_size整除，则进行填充
                     hidden_states = torch.nn.functional.pad(hidden_states, (
-                    0, self.config.pooling_kernel_size - hidden_states.shape[-1] % self.config.pooling_kernel_size))
-                hidden_states = self.pooling_layer(hidden_states).permute(0, 2, 1)
-                attention_mask = attention_mask[:, ::self.config.pooling_kernel_size]
+                    0, self.config.pooling_kernel_size - hidden_states.shape[-1] % self.config.pooling_kernel_size))  # 填充
+                hidden_states = self.pooling_layer(hidden_states).permute(0, 2, 1)  # 进行池化操作
+                attention_mask = attention_mask[:, ::self.config.pooling_kernel_size]  # 调整注意力掩码以匹配池化后的序列长度
                 if self.config.quantize_causal_block_size is not None:
                     extended_attention_mask = self.get_block_causal_attention_mask(attention_mask, block_size=self.config.quantize_causal_block_size // self.config.pooling_kernel_size)
                 else:
@@ -1297,11 +1327,11 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
 
             if idx + 1 == self.config.quantize_position and self.config.quantize_vocab_size is not None:
                 if quantized_token_ids is not None:
-                    hidden_states = self.codebook(quantized_token_ids)
+                    hidden_states = self.codebook(quantized_token_ids)  # 如果量化后的token id存在，则进行解码
                 else:
-                    hidden_quantized, indices_flat, distances = vector_quantize(hidden_states, self.codebook.weight)
-                    quantized_token_ids = indices_flat.reshape(batch_size, hidden_quantized.shape[1])
-                    if self.training:
+                    hidden_quantized, indices_flat, distances = vector_quantize(hidden_states, self.codebook.weight)  # 进行向量量化
+                    quantized_token_ids = indices_flat.reshape(batch_size, hidden_quantized.shape[1])  # 将量化后的token id转换为[batch_size, seq_length]
+                    if self.training:  # 训练过程中使用EMA更新codebook
                         encodings = torch.nn.functional.one_hot(indices_flat, self.config.quantize_vocab_size).float()
                         encodings = encodings * attention_mask.reshape(-1, 1)
                         n = torch.sum(encodings, dim=0)
@@ -1362,11 +1392,11 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
                                                                                                  hidden_quantized.detach(),
                                                                                                  attention_mask) + mse_loss_with_mask(
                                 hidden_quantized, hidden_states.detach(), attention_mask))
-                            self.quantize_loss = loss
-                        hidden_states = hidden_states + (hidden_quantized - hidden_states).detach()
+                            self.quantize_loss = loss  # 训练过程中的量化损失
+                        hidden_states = hidden_states + (hidden_quantized - hidden_states).detach()  # 使梯度流过量化后的隐状态，确保量化后的隐状态能够反向传播
                     else:
-                        hidden_states = hidden_quantized
-                hidden_states = hidden_states + self.embed_positions2.weight[:hidden_states.shape[1]]
+                        hidden_states = hidden_quantized  # 推理过程中的隐状态
+                hidden_states = hidden_states + self.embed_positions2.weight[:hidden_states.shape[1]]  # 将位置编码添加到隐状态中
 
             if idx + 1 == self.save_hidden_position:
                 import numpy as np
@@ -1747,7 +1777,7 @@ class WhisperVQDecoder(WhisperPreTrainedModel):
         return causal_mask
 
 
-@add_start_docstrings(
+@add_start_docstrings(  # 添加文档字符串
     "The bare Whisper Model outputting raw hidden-states without any specific head on top.",
     WHISPER_START_DOCSTRING,
 )
@@ -2050,9 +2080,9 @@ class WhisperVQForConditionalGeneration(WhisperGenerationMixin, WhisperPreTraine
             loss_fct = CrossEntropyLoss()
             # move labels to correct device to enable PP
             labels = labels.to(lm_logits.device)
-            loss = loss_fct(lm_logits.view(-1, self.config.vocab_size), labels.reshape(-1))
+            loss = loss_fct(lm_logits.view(-1, self.config.vocab_size), labels.reshape(-1))  # 计算交叉熵损失，即预测mel图谱和真实mel图谱之间的重建损失
             if self.training and self.model.encoder.quantize_loss is not None:
-                loss = loss + self.model.encoder.quantize_loss
+                loss = loss + self.model.encoder.quantize_loss  # 如果训练过程中量化损失不为None，则将量化损失添加到总损失中
 
         if not return_dict:
             output = (lm_logits,) + outputs[1:]
