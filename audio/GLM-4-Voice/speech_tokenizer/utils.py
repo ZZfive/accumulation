@@ -73,13 +73,17 @@ def extract_speech_token(model: WhisperVQEncoder, feature_extractor: WhisperFeat
                                          return_attention_mask=True, return_tensors="pt", device='cuda',
                                          padding="longest", pad_to_multiple_of=stride)  # 提取mel谱图序列特征
             features = features.to(device="cuda")  # 包含input_features和attention_mask，尺寸例子分别为[1, 128, 120]和[1, 120]
-            outputs = model(**features)
-            speech_tokens = outputs.quantized_token_ids
-            attention_mask = features.attention_mask[:, ::model.conv1.stride[0] * model.conv2.stride[0]]
-            attention_mask = attention_mask[:, ::model.config.pooling_kernel_size]
+            outputs = model(**features)  # 输出包含last_hidden_state[1, 15, 1280], quantized_token_ids[1, 15]
+            speech_tokens = outputs.quantized_token_ids  # [1, 15]
+            attention_mask = features.attention_mask[:, ::model.conv1.stride[0] * model.conv2.stride[0]]  # [1, 60]
+            attention_mask = attention_mask[:, ::model.config.pooling_kernel_size]  # [1, 15]
             assert attention_mask.shape == speech_tokens.shape
             for i in range(len(speech_tokens)):
-                idx = indices[start + i]
+                idx = indices[start + i]  # 获取当前音频片段对应的原始音频索引
+                # 使用attention_mask过滤出有效的标记
+                # attention_mask[i].bool() 创建布尔掩码,只保留True位置的标记
+                # speech_tokens[i][...] 使用布尔索引获取有效标记
+                # .tolist() 将张量转换为Python列表
                 speech_token = speech_tokens[i][attention_mask[i].bool()].tolist()
-                all_speech_tokens[idx].extend(speech_token)
+                all_speech_tokens[idx].extend(speech_token)  # 将处理后的标记添加到对应原始音频的结果列表中
         return all_speech_tokens

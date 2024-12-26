@@ -67,17 +67,17 @@ class QuantizedBaseModelOutput(BaseModelOutput):
 
 # VQ向量量化的核心实现函数
 def vector_quantize(inputs, codebook):
-    embedding_size = codebook.size(1)
-    inputs_flatten = inputs.reshape(-1, embedding_size)
-    codebook_sqr = torch.sum(codebook ** 2, dim=1)  # ||y||²
-    inputs_sqr = torch.sum(inputs_flatten ** 2, dim=1, keepdim=True)  # ||x||²
+    embedding_size = codebook.size(1)  # codebook中单个向量的维度，1280
+    inputs_flatten = inputs.reshape(-1, embedding_size)  # 将输入的维度从[1, 15, 1280] -> [15, 1280]
+    codebook_sqr = torch.sum(codebook ** 2, dim=1)  # ||y||², [16384]，16384是codebook的向量数，或者说大小
+    inputs_sqr = torch.sum(inputs_flatten ** 2, dim=1, keepdim=True)  # ||x||², [1, 15]
     # Compute the distances to the codebook   ||x-y||² = ||x||² + ||y||² - 2x·y
     distances = torch.addmm(codebook_sqr + inputs_sqr,
-                            inputs_flatten, codebook.t(), alpha=-2.0, beta=1.0)
+                            inputs_flatten, codebook.t(), alpha=-2.0, beta=1.0)  # [15, 16384]
 
-    _, indices_flatten = torch.min(distances, dim=1)  # 找到最近的码字索引
-    codes_flatten = torch.index_select(codebook, dim=0, index=indices_flatten)  # 基于索引从codebook中获取对应的向量
-    codes = codes_flatten.view_as(inputs)  # 恢复原始形状
+    _, indices_flatten = torch.min(distances, dim=1)  # 找到最近的码字索引，[15]
+    codes_flatten = torch.index_select(codebook, dim=0, index=indices_flatten)  # 基于索引从codebook中获取对应的向量，[15, 1280]
+    codes = codes_flatten.view_as(inputs)  # 恢复原始形状，[1, 15, 1280]，基于量化计算后从codebook中获取的向量
     return codes, indices_flatten, distances
 
 
@@ -425,9 +425,9 @@ class WhisperAttention(nn.Module):
         # if key_value_states are provided this layer is used as a cross-attention layer
         # for the decoder
         is_cross_attention = key_value_states is not None  # 是否是交叉注意力
-        bsz, tgt_len, _ = hidden_states.size()  # 获取隐藏状态的形状
+        bsz, tgt_len, _ = hidden_states.size()  # 获取隐藏状态的形状，[1, 60, 1280]
 
-        # get query proj
+        # get query proj，将整体分为多头，[1, 60, 1280] -> [1, 20, 60, 64]
         query_states = self._shape(self.q_proj(hidden_states) * self.scaling, tgt_len, bsz)
 
         if past_key_value is not None:
@@ -446,8 +446,8 @@ class WhisperAttention(nn.Module):
             key_states = past_key_value.key_cache[self.layer_idx]
             value_states = past_key_value.value_cache[self.layer_idx]
         else:
-            key_states = self._shape(self.k_proj(current_states), -1, bsz)
-            value_states = self._shape(self.v_proj(current_states), -1, bsz)
+            key_states = self._shape(self.k_proj(current_states), -1, bsz)  # [1, 20, 60, 64]
+            value_states = self._shape(self.v_proj(current_states), -1, bsz)  # [1, 20, 60, 64]
             if past_key_value is not None:
                 # save all key/value_states to cache to be re-used for fast auto-regressive generation
                 cache_position = cache_position if not is_cross_attention else None
@@ -455,13 +455,13 @@ class WhisperAttention(nn.Module):
                     key_states, value_states, self.layer_idx, {"cache_position": cache_position}
                 )
 
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3))
+        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3))  # [1, 20, 60, 64] * [1, 20, 64, 60] = [1, 20, 60, 60]
 
         if attention_mask is not None:  # no matter the length, we just slice it
-            causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-            attn_weights = attn_weights + causal_mask
+            causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]  # [1, 1, 60, 60]
+            attn_weights = attn_weights + causal_mask  # [1, 20, 60, 60] + [1, 1, 60, 60] = [1, 20, 60, 60]，因为causal_mask是0或-inf，所以是相加
 
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1)
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1)  # [1, 20, 60, 60] -> [1, 20, 60, 60]
 
         if layer_head_mask is not None:
             if layer_head_mask.size() != (self.num_heads,):
@@ -472,7 +472,7 @@ class WhisperAttention(nn.Module):
             attn_weights = layer_head_mask.view(1, -1, 1, 1) * attn_weights
 
         attn_probs = nn.functional.dropout(attn_weights, p=self.dropout, training=self.training)
-        attn_output = torch.matmul(attn_probs, value_states)
+        attn_output = torch.matmul(attn_probs, value_states)  # [1, 20, 60, 60] * [1, 20, 60, 64] = [1, 20, 60, 64]
 
         if attn_output.size() != (bsz, self.num_heads, tgt_len, self.head_dim):
             raise ValueError(
@@ -480,12 +480,12 @@ class WhisperAttention(nn.Module):
                 f" {attn_output.size()}"
             )
 
-        attn_output = attn_output.transpose(1, 2)
+        attn_output = attn_output.transpose(1, 2)  # [1, 20, 60, 64] -> [1, 60, 20, 64]
         # Use the `embed_dim` from the config (stored in the class) rather than `hidden_state` because `attn_output` can be
         # partitioned across GPUs when using tensor-parallelism.
-        attn_output = attn_output.reshape(bsz, tgt_len, self.embed_dim)
+        attn_output = attn_output.reshape(bsz, tgt_len, self.embed_dim)  # [1, 60, 20, 64] -> [1, 60, 1280]
 
-        attn_output = self.out_proj(attn_output)
+        attn_output = self.out_proj(attn_output)  # [1, 60, 1280] -> [1, 60, 1280]
 
         return attn_output, attn_weights, past_key_value
 
@@ -729,7 +729,7 @@ class WhisperVQEncoderLayer(nn.Module):
             num_heads=config.encoder_attention_heads,
             dropout=config.attention_dropout,
             config=config,
-            is_causal=is_causal  # 默认为False，即不使用因果注意力，使用双向注意力
+            is_causal=is_causal  # 默认为False，即不使用因果注意力，使用双向注意力；此处是WhisperAttention
         )
         self.is_causal = is_causal
         if self.is_causal:
@@ -760,24 +760,24 @@ class WhisperVQEncoderLayer(nn.Module):
                 Whether or not to return the attentions tensors of all attention layers. See `attentions` under
                 returned tensors for more detail.
         """
-        residual = hidden_states
-        hidden_states = self.self_attn_layer_norm(hidden_states)
+        residual = hidden_states  # [1, 60, 1280]
+        hidden_states = self.self_attn_layer_norm(hidden_states)  # [1, 60, 1280]
         hidden_states, attn_weights, _ = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask if not self.is_causal else None,
             layer_head_mask=layer_head_mask,
             output_attentions=output_attentions,
-        )
-        hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
-        hidden_states = residual + hidden_states
+        )  # [1, 60, 1280]和[1, 20, 60, 60]
+        hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)  # [1, 60, 1280]
+        hidden_states = residual + hidden_states  # [1, 60, 1280] + [1, 60, 1280] = [1, 60, 1280]
 
-        residual = hidden_states
-        hidden_states = self.final_layer_norm(hidden_states)
-        hidden_states = self.activation_fn(self.fc1(hidden_states))
-        hidden_states = nn.functional.dropout(hidden_states, p=self.activation_dropout, training=self.training)
-        hidden_states = self.fc2(hidden_states)
-        hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
-        hidden_states = residual + hidden_states
+        residual = hidden_states  # [1, 60, 1280]   
+        hidden_states = self.final_layer_norm(hidden_states)  # [1, 60, 1280]
+        hidden_states = self.activation_fn(self.fc1(hidden_states))  # [1, 60, 1280] -> [1, 60, 5120]
+        hidden_states = nn.functional.dropout(hidden_states, p=self.activation_dropout, training=self.training)  # [1, 60, 5120]
+        hidden_states = self.fc2(hidden_states)  # [1, 60, 5120] -> [1, 60, 1280]
+        hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)  # [1, 60, 1280]
+        hidden_states = residual + hidden_states  # [1, 60, 1280] + [1, 60, 1280] = [1, 60, 1280]
 
         if hidden_states.dtype == torch.float16 and (
                 torch.isinf(hidden_states).any() or torch.isnan(hidden_states).any()
@@ -1260,13 +1260,13 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states  # 是否返回所有层的隐状态
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict  # 是否返回字典格式
-        inputs_embeds = nn.functional.gelu(self.conv1(input_features))  # 对输入进行卷积操作
-        inputs_embeds = nn.functional.gelu(self.conv2(inputs_embeds))  # 对输入进行卷积操作
+        inputs_embeds = nn.functional.gelu(self.conv1(input_features))  # 对输入进行卷积操作 [1, 128, 120] -> [1, 1280, 120]
+        inputs_embeds = nn.functional.gelu(self.conv2(inputs_embeds))  # 对输入进行卷积操作 [1, 1280, 120] -> [1, 1280, 60]
 
-        inputs_embeds = inputs_embeds.permute(0, 2, 1)  # 将输入嵌入的维度从[batch_size, seq_length, embed_dim]转换为[batch_size, embed_dim, seq_length]
-        embed_pos = self.embed_positions.weight  # 获取位置编码
+        inputs_embeds = inputs_embeds.permute(0, 2, 1)  # [1, 1280, 60] -> [1, 60, 1280]
+        embed_pos = self.embed_positions.weight  # 获取位置编码, [1500, 1280]
 
-        hidden_states = inputs_embeds + embed_pos[:seq_length]  # 将输入嵌入和位置编码相加
+        hidden_states = inputs_embeds + embed_pos[:seq_length]  # 将输入嵌入和位置编码相加, [1, 60, 1280] + [1, 60, 1280] = [1, 60, 1280]
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
 
         # 初始化输出收集器
@@ -1292,15 +1292,15 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
             if to_drop:
                 layer_outputs = (None, None)  # 如果跳过该层，则返回None
             else:
-                if self.gradient_checkpointing and self.training:  # 是否使用梯度检查点
-                    layer_outputs = self._gradient_checkpointing_func(
+                if self.gradient_checkpointing and self.training:
+                    layer_outputs = self._gradient_checkpointing_func(  # 使用梯度检查点，节省内存但增加时间
                         encoder_layer.__call__,
                         hidden_states,
                         extended_attention_mask,
                         (head_mask[idx] if head_mask is not None else None),
                         output_attentions,
                     )
-                else:  # 正常前向传播
+                else:  # 常规前向传播
                     layer_outputs = encoder_layer(
                         hidden_states,
                         extended_attention_mask,
@@ -1308,29 +1308,29 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
                         output_attentions=output_attentions,
                     )
 
-                hidden_states = layer_outputs[0]
+                hidden_states = layer_outputs[0]  # [1, 60, 1280]
 
             if output_attentions:
                 all_attentions = all_attentions + (layer_outputs[1],)  # 收集所有层的注意力权重
-            if idx + 1 == self.config.pooling_position and self.config.pooling_kernel_size is not None:
-                hidden_states = hidden_states.permute(0, 2, 1)  # 将hidden_states的维度从[batch_size, seq_length, embed_dim]转换为[batch_size, embed_dim, seq_length]
+            if idx + 1 == self.config.pooling_position and self.config.pooling_kernel_size is not None:  # 在第pooling_position层进行池化操作
+                hidden_states = hidden_states.permute(0, 2, 1)  # [1, 60, 1280] -> [1, 1280, 60]
                 if hidden_states.shape[-1] % self.config.pooling_kernel_size != 0:  # 如果seq_length不能被pooling_kernel_size整除，则进行填充
                     hidden_states = torch.nn.functional.pad(hidden_states, (
                     0, self.config.pooling_kernel_size - hidden_states.shape[-1] % self.config.pooling_kernel_size))  # 填充
-                hidden_states = self.pooling_layer(hidden_states).permute(0, 2, 1)  # 进行池化操作
+                hidden_states = self.pooling_layer(hidden_states).permute(0, 2, 1)  # 进行池化操作, [1, 1280, 60] ->[1, 1280, 15] -> [1, 15, 1280]
                 attention_mask = attention_mask[:, ::self.config.pooling_kernel_size]  # 调整注意力掩码以匹配池化后的序列长度
-                if self.config.quantize_causal_block_size is not None:
+                if self.config.quantize_causal_block_size is not None:  # 因为池化后隐向量长度变短，注意力掩码需要重新计算，[1, 1, 15, 15]
                     extended_attention_mask = self.get_block_causal_attention_mask(attention_mask, block_size=self.config.quantize_causal_block_size // self.config.pooling_kernel_size)
                 else:
                     extended_attention_mask = self.get_extended_attention_mask(attention_mask, (
                     batch_size, seq_length // self.config.pooling_kernel_size))
 
-            if idx + 1 == self.config.quantize_position and self.config.quantize_vocab_size is not None:
+            if idx + 1 == self.config.quantize_position and self.config.quantize_vocab_size is not None:  # 在第quantize_position层进行量化操作
                 if quantized_token_ids is not None:
-                    hidden_states = self.codebook(quantized_token_ids)  # 如果量化后的token id存在，则进行解码
+                    hidden_states = self.codebook(quantized_token_ids)  # 如果量化后的token id存在，则直接进行解码
                 else:
                     hidden_quantized, indices_flat, distances = vector_quantize(hidden_states, self.codebook.weight)  # 进行向量量化
-                    quantized_token_ids = indices_flat.reshape(batch_size, hidden_quantized.shape[1])  # 将量化后的token id转换为[batch_size, seq_length]
+                    quantized_token_ids = indices_flat.reshape(batch_size, hidden_quantized.shape[1])  # [1, 15]
                     if self.training:  # 训练过程中使用EMA更新codebook
                         encodings = torch.nn.functional.one_hot(indices_flat, self.config.quantize_vocab_size).float()
                         encodings = encodings * attention_mask.reshape(-1, 1)
@@ -1395,8 +1395,8 @@ class WhisperVQEncoder(WhisperPreTrainedModel):
                             self.quantize_loss = loss  # 训练过程中的量化损失
                         hidden_states = hidden_states + (hidden_quantized - hidden_states).detach()  # 使梯度流过量化后的隐状态，确保量化后的隐状态能够反向传播
                     else:
-                        hidden_states = hidden_quantized  # 推理过程中的隐状态
-                hidden_states = hidden_states + self.embed_positions2.weight[:hidden_states.shape[1]]  # 将位置编码添加到隐状态中
+                        hidden_states = hidden_quantized  # 推理过程中的隐状态, [1, 15, 1280]
+                hidden_states = hidden_states + self.embed_positions2.weight[:hidden_states.shape[1]]  # 将位置编码添加到隐状态中, [1, 15, 1280] + [15, 1280] = [1, 15, 1280]
 
             if idx + 1 == self.save_hidden_position:
                 import numpy as np
