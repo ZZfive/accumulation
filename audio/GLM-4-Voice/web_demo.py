@@ -82,11 +82,11 @@ if __name__ == "__main__":
             history.append({"role": "user", "content": {"path": audio_path}})
             audio_tokens = extract_speech_token(
                 whisper_model, feature_extractor, [audio_path]
-            )[0]
+            )[0]  # 提取音频的token，返回一个列表，列表中的每个元素是一个token id，就像文本分词器返回的token id
             if len(audio_tokens) == 0:
                 raise gr.Error("No audio tokens extracted")
-            audio_tokens = "".join([f"<|audio_{x}|>" for x in audio_tokens])
-            audio_tokens = "<|begin_of_audio|>" + audio_tokens + "<|end_of_audio|>"
+            audio_tokens = "".join([f"<|audio_{x}|>" for x in audio_tokens])  # 将token id转换为token字符串
+            audio_tokens = "<|begin_of_audio|>" + audio_tokens + "<|end_of_audio|>"  # 添加音频内容的开始和结束标记
             user_input = audio_tokens
             system_prompt = "User will provide you with a speech instruction. Do it step by step. First, think about the instruction and respond in a interleaved manner, with 13 text token followed by 26 audio tokens. "
 
@@ -101,8 +101,8 @@ if __name__ == "__main__":
         inputs = previous_input_tokens + previous_completion_tokens
         inputs = inputs.strip()
         if "<|system|>" not in inputs:
-            inputs += f"<|system|>\n{system_prompt}"
-        inputs += f"<|user|>\n{user_input}<|assistant|>streaming_transcription\n"
+            inputs += f"<|system|>\n{system_prompt}"  # 添加系统提示
+        inputs += f"<|user|>\n{user_input}<|assistant|>streaming_transcription\n"  # 添加用户输入和助手提示
 
         with torch.no_grad():
             response = requests.post(
@@ -114,12 +114,12 @@ if __name__ == "__main__":
                     "max_new_tokens": max_new_token,
                 }),
                 stream=True
-            )
+            )  # 发送请求并获取流式响应
             text_tokens, audio_tokens = [], []
-            audio_offset = glm_tokenizer.convert_tokens_to_ids('<|audio_0|>')
-            end_token_id = glm_tokenizer.convert_tokens_to_ids('<|user|>')
+            audio_offset = glm_tokenizer.convert_tokens_to_ids('<|audio_0|>') # 152353
+            end_token_id = glm_tokenizer.convert_tokens_to_ids('<|user|>')  # 151336
             complete_tokens = []
-            prompt_speech_feat = torch.zeros(1, 0, 80).to(device)
+            prompt_speech_feat = torch.zeros(1, 0, 80).to(device)  # 初始化prompt_speech_feat
             flow_prompt_speech_token = torch.zeros(1, 0, dtype=torch.int64).to(device)
             this_uuid = str(uuid.uuid4())
             tts_speechs = []
@@ -131,40 +131,40 @@ if __name__ == "__main__":
             block_size = block_size_list[block_size_idx]
             audio_processor = AudioStreamProcessor()
             for chunk in response.iter_lines():
-                token_id = json.loads(chunk)["token_id"]
+                token_id = json.loads(chunk)["token_id"]  # 从流式响应中提取token id
                 if token_id == end_token_id:
                     is_finalize = True
-                if len(audio_tokens) >= block_size or (is_finalize and audio_tokens):
+                if len(audio_tokens) >= block_size or (is_finalize and audio_tokens):  # 如果音频token数量大于等于block_size，或者已经到达结束标记，则进行TTS
                     if block_size_idx < len(block_size_list) - 1:
                         block_size_idx += 1
-                        block_size = block_size_list[block_size_idx]
-                    tts_token = torch.tensor(audio_tokens, device=device).unsqueeze(0)
+                        block_size = block_size_list[block_size_idx]  # 更新block_size
+                    tts_token = torch.tensor(audio_tokens, device=device).unsqueeze(0)  # 将音频token转换为张量， 如[1, 25]
 
                     if prev_mel is not None:
-                        prompt_speech_feat = torch.cat(tts_mels, dim=-1).transpose(1, 2)
+                        prompt_speech_feat = torch.cat(tts_mels, dim=-1).transpose(1, 2)  # 初始时prompt_speech_feat为0，后续将tts_mels连接起来
 
                     tts_speech, tts_mel = audio_decoder.token2wav(tts_token, uuid=this_uuid,
                                                                   prompt_token=flow_prompt_speech_token.to(device),
                                                                   prompt_feat=prompt_speech_feat.to(device),
-                                                                  finalize=is_finalize)
-                    prev_mel = tts_mel
+                                                                  finalize=is_finalize)  # 使用flow的audio decoder模型将speech token转换为音频和mel谱图
+                    prev_mel = tts_mel  # 更新prev_mel
 
-                    audio_bytes = audio_processor.process(tts_speech.clone().cpu().numpy()[0], last=is_finalize)
+                    audio_bytes = audio_processor.process(tts_speech.clone().cpu().numpy()[0], last=is_finalize)  # 处理音频
 
                     tts_speechs.append(tts_speech.squeeze())
                     tts_mels.append(tts_mel)
-                    if audio_bytes:
+                    if audio_bytes:  # 如果音频数据不为空，则返回历史、输入、空字符串、空字符串、音频数据、None
                         yield history, inputs, '', '', audio_bytes, None
-                    flow_prompt_speech_token = torch.cat((flow_prompt_speech_token, tts_token), dim=-1)
+                    flow_prompt_speech_token = torch.cat((flow_prompt_speech_token, tts_token), dim=-1)  # 更新flow_prompt_speech_token
                     audio_tokens = []
                 if not is_finalize:
-                    complete_tokens.append(token_id)
-                    if token_id >= audio_offset:
-                        audio_tokens.append(token_id - audio_offset)
+                    complete_tokens.append(token_id)  # 所有预测出的token id序列
+                    if token_id >= audio_offset:  # 如果token id大于音频偏移量，则认为是音频token
+                        audio_tokens.append(token_id - audio_offset)  # 将音频token id转换为音频token
                     else:
-                        text_tokens.append(token_id)
-        tts_speech = torch.cat(tts_speechs, dim=-1).cpu()
-        complete_text = glm_tokenizer.decode(complete_tokens, spaces_between_special_tokens=False)
+                        text_tokens.append(token_id)  # 否则认为是文本token
+        tts_speech = torch.cat(tts_speechs, dim=-1).cpu()  # 将所有音频片段连接起来，并转换为CPU上的张量
+        complete_text = glm_tokenizer.decode(complete_tokens, spaces_between_special_tokens=False)  # 将所有文本token连接起来，并转换为文本
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             torchaudio.save(f, tts_speech.unsqueeze(0), 22050, format="wav")
         history.append({"role": "assistant", "content": {"path": f.name, "type": "audio/wav"}})
