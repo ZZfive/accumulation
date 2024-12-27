@@ -110,35 +110,35 @@ class MaskedDiffWithXvec(torch.nn.Module):
                   embedding):
         assert token.shape[0] == 1
         # xvec projection
-        embedding = F.normalize(embedding, dim=1)
-        embedding = self.spk_embed_affine_layer(embedding)
+        embedding = F.normalize(embedding, dim=1)  # [1, 192]
+        embedding = self.spk_embed_affine_layer(embedding)  # [1, 80]
 
         # concat text and prompt_text
-        token, token_len = torch.concat([prompt_token, token], dim=1), prompt_token_len + token_len
-        mask = (~make_pad_mask(token_len)).float().unsqueeze(-1).to(embedding)
-        token = self.input_embedding(torch.clamp(token, min=0)) * mask
+        token, token_len = torch.concat([prompt_token, token], dim=1), prompt_token_len + token_len  # 将之前预测出的token和当前预测出的token拼接，shape如[1, 25]和[25]
+        mask = (~make_pad_mask(token_len)).float().unsqueeze(-1).to(embedding)  # [1, 25, 1]
+        token = self.input_embedding(torch.clamp(token, min=0)) * mask  # [1, 25, 512]
 
         # text encode
-        h, h_lengths = self.encoder(token, token_len)
-        h = self.encoder_proj(h)
-        feat_len = (token_len / self.input_frame_rate * 22050 / 256).int()
-        h, h_lengths = self.length_regulator(h, feat_len)
+        h, h_lengths = self.encoder(token, token_len)  # [1, 25, 512]和[1, 1, 25]
+        h = self.encoder_proj(h)  # [1, 25, 80]
+        feat_len = (token_len / self.input_frame_rate * 22050 / 256).int()  # 如shape[1]，当前speech tokens序列的长度为25，计算后的mel谱图长度为172
+        h, h_lengths = self.length_regulator(h, feat_len)  # [1, 172, 80]，通过长度调节器将h的长度调节为172
 
         # get conditions
-        conds = torch.zeros([1, feat_len.max().item(), self.output_size], device=token.device)
-        if prompt_feat.shape[1] != 0:
+        conds = torch.zeros([1, feat_len.max().item(), self.output_size], device=token.device)  # [1, 172, 80]
+        if prompt_feat.shape[1] != 0:  # 如果prompt_feat不为空，则将prompt_feat填充到conds中
             for i, j in enumerate(prompt_feat_len):
                 conds[i, :j] = prompt_feat[i]
-        conds = conds.transpose(1, 2)
+        conds = conds.transpose(1, 2)  # [1, 80, 172]
 
-        mask = (~make_pad_mask(feat_len)).to(h)
+        mask = (~make_pad_mask(feat_len)).to(h)  # [1, 172]
         feat = self.decoder(
             mu=h.transpose(1, 2).contiguous(),
             mask=mask.unsqueeze(1),
             spks=embedding,
             cond=conds,
             n_timesteps=10
-        )
-        if prompt_feat.shape[1] != 0:
+        )  # [1, 80, 172]，通过flow decoder预测出mel谱图
+        if prompt_feat.shape[1] != 0:  # 如果prompt_feat不为空，则将prompt_feat从feat中截取出来
             feat = feat[:, :, prompt_feat.shape[1]:]
         return feat

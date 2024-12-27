@@ -51,7 +51,7 @@ if __name__ == "__main__":
         # GLM
         glm_tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
 
-        # Flow & Hift
+        # Flow & Hift，架构与CosyVoice一致，只是vocab size等少数参数设置不同
         audio_decoder = AudioDecoder(config_path=flow_config, flow_ckpt_path=flow_checkpoint,
                                      hift_ckpt_path=hift_checkpoint,
                                      device=device)
@@ -138,14 +138,14 @@ if __name__ == "__main__":
                     if block_size_idx < len(block_size_list) - 1:
                         block_size_idx += 1
                         block_size = block_size_list[block_size_idx]  # 更新block_size
-                    tts_token = torch.tensor(audio_tokens, device=device).unsqueeze(0)  # 将音频token转换为张量， 如[1, 25]
+                    tts_token = torch.tensor(audio_tokens, device=device).unsqueeze(0)  # 将音频token id转换为张量， 如[1, 25]
 
                     if prev_mel is not None:
                         prompt_speech_feat = torch.cat(tts_mels, dim=-1).transpose(1, 2)  # 初始时prompt_speech_feat为0，后续将tts_mels连接起来
 
                     tts_speech, tts_mel = audio_decoder.token2wav(tts_token, uuid=this_uuid,
-                                                                  prompt_token=flow_prompt_speech_token.to(device),
-                                                                  prompt_feat=prompt_speech_feat.to(device),
+                                                                  prompt_token=flow_prompt_speech_token.to(device),  # 将之前预测预测的speech token作为后续预测的条件
+                                                                  prompt_feat=prompt_speech_feat.to(device),  # 将之前预测出的mel谱图序列也所谓后续预测的条件
                                                                   finalize=is_finalize)  # 使用flow的audio decoder模型将speech token转换为音频和mel谱图
                     prev_mel = tts_mel  # 更新prev_mel
 
@@ -156,7 +156,7 @@ if __name__ == "__main__":
                     if audio_bytes:  # 如果音频数据不为空，则返回历史、输入、空字符串、空字符串、音频数据、None
                         yield history, inputs, '', '', audio_bytes, None
                     flow_prompt_speech_token = torch.cat((flow_prompt_speech_token, tts_token), dim=-1)  # 更新flow_prompt_speech_token
-                    audio_tokens = []
+                    audio_tokens = []  # 每次解码预测一次mel谱图后回清空audio_tokens，方式重复包含之前的audio tokens
                 if not is_finalize:
                     complete_tokens.append(token_id)  # 所有预测出的token id序列
                     if token_id >= audio_offset:  # 如果token id大于音频偏移量，则认为是音频token
