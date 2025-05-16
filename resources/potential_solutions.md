@@ -381,7 +381,7 @@
 - 文生贴图，没开源：https://dong-huo.github.io/TexGen/
 - 在进行图片生3D模型后，将原始图片和生成的3D模型作为输入，对3D模型进行贴图：https://huggingface.co/spaces/VAST-AI/MV-Adapter-Img2Texture
 
-## 其他
+# 其他
 - 人物图片转身体草图：https://huggingface.co/spaces/yeq6x/Image2Body_gradio
 - 超大画幅图片生成：https://huggingface.co/spaces/takarajordan/CineDiffusion
 - 基于视频生成3D场景：https://huggingface.co/spaces/facebook/vggt
@@ -389,6 +389,6 @@
 - 好像是可以将图片中的风格生成模型的贴图：https://styleme3d.github.io/
 - 将3d模型进行拆分：https://www.reddit.com/r/comfyui/comments/1kgwb80/i_implemented_a_new_mit_license_3d_model/
 
-# 心理学相关
+## 心理学相关
 - https://huggingface.co/papers/2409.11733--情绪识别？
 - https://huggingface.co/papers/2409.12106
