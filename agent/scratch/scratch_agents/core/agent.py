@@ -1,6 +1,6 @@
 """Agent基类"""
 
-from typing import Optional, List
+from typing import List
 from abc import ABC, abstractmethod
 
 from .llm import LLM

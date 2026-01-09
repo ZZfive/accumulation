@@ -1,6 +1,5 @@
 """工具基类"""
 
-from multiprocessing.reduction import steal_handle
 import re
 import inspect
 from abc import ABC, abstractmethod

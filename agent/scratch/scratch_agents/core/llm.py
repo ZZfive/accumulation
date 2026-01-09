@@ -7,7 +7,7 @@ from typing import Optional, Literal, Iterable, List, Dict
 
 from openai import OpenAI
 
-from exceptions import ScratchAgentsException
+from .exceptions import ScratchAgentsException
 
 
 # 支持的LLM提供商

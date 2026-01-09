@@ -19,7 +19,7 @@ class ToolRegistry:
         self._tools: Dict[str, Tool] = {}
         self._functions: Dict[str, Dict[str, Any]] = {}
     
-    def registry_tool(self, tool: Tool, auto_expand: bool = True):
+    def register_tool(self, tool: Tool, auto_expand: bool = True):
         r"""
         注册Tool对象
 
@@ -67,7 +67,7 @@ class ToolRegistry:
         }
         print(f"✅ 工具 '{name}' 已注册。")
 
-    def unregister(self, name: str):
+    def unregister_tool(self, name: str):
         """注销工具"""
         if name in self._tools:
             del self._tools[name]
