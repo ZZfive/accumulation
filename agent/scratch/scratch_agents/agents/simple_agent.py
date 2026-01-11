@@ -2,7 +2,7 @@
 
 import re
 import json
-from typing import Iterable, TYPE_CHECKING, List, Dict
+from typing import Iterator, TYPE_CHECKING, List, Dict
 
 from ..core.llm import LLM
 from ..core.agent import Agent
@@ -348,7 +348,7 @@ class SimpleAgent(Agent):
         """检查是否有可用工具"""
         return self.enable_tool_calling and self.tool_registry is not None
 
-    def stream_run(self, input_text: str, **kwargs) -> Iterable[str]:
+    def stream_run(self, input_text: str, **kwargs) -> Iterator[str]:
         """
         流式运行Agent
         

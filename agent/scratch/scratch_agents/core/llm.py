@@ -3,7 +3,7 @@
 """
 
 import os
-from typing import Optional, Literal, Iterable, List, Dict
+from typing import Optional, Literal, Iterator, List, Dict
 
 from openai import OpenAI
 
@@ -266,7 +266,7 @@ class LLM:
                 return "gpt-3.5-turbo"
     
     def think(self, messages: List[Dict[str, str]], temperature: float = None, max_tokens: Optional[int] = None,
-              stream: bool = True, **kwargs) -> Iterable[str]:
+              stream: bool = True, **kwargs) -> Iterator[str]:
         """
         调用大语言模型进行思考，并返回流式响应。
         这是主要的调用方法，默认使用流式响应以获得更好的用户体验。
@@ -326,7 +326,7 @@ class LLM:
             print(f"❌ 调用LLM API时发生错误: {e}")
             raise ScratchAgentsException(f"LLM调用失败: {str(e)}")
     
-    def stream_invoke(self, messages: List[Dict[str, str]], **kwargs) -> Iterable[str]:
+    def stream_invoke(self, messages: List[Dict[str, str]], **kwargs) -> Iterator[str]:
         """
         流式调用LLM的别名方法，与think方法功能相同。
         保持向后兼容性。
