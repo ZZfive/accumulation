@@ -250,7 +250,7 @@ class FunctionCallAgent(Agent):
         messages.append({"role": "user", "content": input_text})
 
         tool_schemas = self._build_tool_schema()
-        if not tool_schemas:
+        if not tool_schemas:  # 如果tool schemas构建失败，常规调用llm，不使用工具调用
             response_text = self.llm.invoke(messages, **kwargs)
             self.add_message(Message(content=input_text, role="user"))
             self.add_message(Message(content=response_text, role="assistant"))
@@ -270,7 +270,7 @@ class FunctionCallAgent(Agent):
             content = self._extract_messages_content(assistant_message.content)
             tool_calls = list(assistant_message.tool_calls or [])
 
-            if tool_calls:
+            if tool_calls:  # 如果上次调用返回了具体的工具调用，解析工具调用信息执行，同时记录工具调用整个过程的历史数据
                 assistant_payload: Dict[str, Any] = {"role": "assistant", "content": content}
                 assistant_payload["tool_calls"] = []
 
@@ -302,13 +302,13 @@ class FunctionCallAgent(Agent):
             messages.append({"role": "assistant", "content": final_response})
             break
 
-        if current_iteration >= iterations_limit and not final_response:
+        if current_iteration >= iterations_limit and not final_response:  # 如果工具调用迭代次数达到限制，且没有最终响应，则调用llm，不使用工具调用
             final_choice = self._invoke_with_tools(messages, tool_schemas, "none", **kwargs)
             final_response = self._extract_messages_content(final_choice.choices[0].message.content)
             messages.append({"role": "assistant", "content": final_response})
         
-        self.add_message(Message(content=input_text, role="user"))
-        self.add_message(Message(content=final_response, role="assistant"))
+        self.add_message(Message(content=input_text, role="user"))  # 将用户输入添加到历史记录
+        self.add_message(Message(content=final_response, role="assistant"))  # 将最终响应添加到历史记录
         return final_response
     
     def add_tool(self, tool: "Tool") -> None:
