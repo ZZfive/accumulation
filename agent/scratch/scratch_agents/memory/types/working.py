@@ -12,6 +12,14 @@ from datetime import datetime, timedelta
 
 from ..base import BaseMemory, MemoryItem, MemoryConfig
 
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+    import numpy as np
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+
 
 class WorkingMemory(BaseMemory):
     r"""工作记忆实现
@@ -80,10 +88,8 @@ class WorkingMemory(BaseMemory):
         # 尝试语义向量检索
         vector_scores = {}
         try:
-            # 简单语义相似度计算，使用TF-IDF或其他轻量方法
-            from sklearn.feature_extraction.text import TfidfVectorizer
-            from sklearn.metrics.pairwise import cosine_similarity
-            import numpy as np
+            if not SKLEARN_AVAILABLE:
+                raise ImportError
 
             # 准备文档
             documents = [query] + [m.content for m in filtered_memories]
