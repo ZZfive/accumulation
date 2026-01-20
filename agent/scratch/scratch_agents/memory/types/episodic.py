@@ -82,7 +82,7 @@ class EpisodicMemory(BaseMemory):
         self.vector_store = QdrantConnectionManager.get_instance(
             url=qdrant_url,
             api_key=qdrant_api_key,
-            collection_name=os.getenv("QDRANT_COLLECTION", "hello_agents_vectors"),
+            collection_name=os.getenv("QDRANT_COLLECTION", "agents_vectors"),
             vector_size=get_dimension(getattr(self.embedder, 'dimension', 384)),
             distance=os.getenv("QDRANT_DISTANCE", "cosine")
         )

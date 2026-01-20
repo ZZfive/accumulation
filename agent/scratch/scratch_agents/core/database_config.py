@@ -30,7 +30,7 @@ class QdrantConfig(BaseModel):
     
     # 集合配置
     collection_name: str = Field(
-        default="hello_agents_vectors",
+        default="agents_vectors",
         description="向量集合名称"
     )
     vector_size: int = Field(
@@ -54,7 +54,7 @@ class QdrantConfig(BaseModel):
         return cls(
             url=os.getenv("QDRANT_URL"),
             api_key=os.getenv("QDRANT_API_KEY"),
-            collection_name=os.getenv("QDRANT_COLLECTION", "hello_agents_vectors"),
+            collection_name=os.getenv("QDRANT_COLLECTION", "agents_vectors"),
             vector_size=int(os.getenv("QDRANT_VECTOR_SIZE", "384")),
             distance=os.getenv("QDRANT_DISTANCE", "cosine"),
             timeout=int(os.getenv("QDRANT_TIMEOUT", "30"))
