@@ -19,20 +19,20 @@ class SimpleAgent(Agent):
     def __init__(self, name: str, llm: LLM, system_prompt: str = None,
                  config: Config = None, tool_registry: "ToolRegistry" = None,
                  enable_tool_calling: bool = True) -> None:
-                 r"""
-                 初始化SimpleAgent
+        r"""
+        初始化SimpleAgent
 
-                 Args：
-                    name：Agent名称
-                    llm：LLM实例
-                    system_prompt：系统提示词
-                    confif：配置对象
-                    tool_registry：工具注册表
-                    enable_tool_calling：是否启用工具调用，只有在提供tool_registry时生效
-                 """
-                 super().__init__(name, llm, system_prompt, config)
-                 self.tool_registry = tool_registry
-                 self.enable_tool_calling = enable_tool_calling and tool_registry is not name
+        Args：
+        name：Agent名称
+        llm：LLM实例
+        system_prompt：系统提示词
+        confif：配置对象
+        tool_registry：工具注册表
+        enable_tool_calling：是否启用工具调用，只有在提供tool_registry时生效
+        """
+        super().__init__(name, llm, system_prompt, config)
+        self.tool_registry = tool_registry
+        self.enable_tool_calling = enable_tool_calling and tool_registry is not name
     
     def _get_enhanced_system_prompt(self) -> str:
         r"""构建增强的系统提示词，包含工具信息"""
